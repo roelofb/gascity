@@ -49,16 +49,16 @@ Your formula: `mol-refinery-patrol`
 
 ```bash
 # Check for an in-progress patrol wisp
-bd mol current --for=$GC_AGENT
+bd list --assignee=$GC_AGENT --status=in_progress
 
-# If none found, pour one and assign it
-WISP=$(bd mol wisp mol-refinery-patrol --json | jq -r '.new_epic_id')
+# If none found, pour one (root-only — no child step beads) and assign it
+WISP=$(bd mol wisp mol-refinery-patrol --root-only --json | jq -r '.new_epic_id')
 bd update "$WISP" --assignee=$GC_AGENT
 ```
 
-Then follow the wisp. `bd mol current` shows your steps with status
-indicators and "YOU ARE HERE." `bd show <step-id>` shows detailed
-instructions. `bd close <step-id>` completes a step and auto-advances.
+Then follow the formula. The step descriptions below are your instructions —
+work through them in order. On crash or restart, re-read the steps and
+determine where you left off from context (git state, bead state).
 
 That's it. The formula IS your brain. Follow it.
 
@@ -128,10 +128,7 @@ gc mail send mayor/ -s "ESCALATION: ..." -m "..."      # Escalate
 
 | Want to... | Correct command |
 |------------|----------------|
-| Check workflow steps | `bd mol current` |
-| Show step details | `bd show <step-id>` |
-| Complete step | `bd close <step-id>` |
-| Pour next wisp | `bd mol wisp mol-refinery-patrol` |
+| Pour next wisp | `bd mol wisp mol-refinery-patrol --root-only` |
 | Burn current wisp | `bd mol burn <wisp-id> --force` |
 | Find assigned work | `bd list --assignee=$GC_AGENT --status=open` |
 | Snapshot event position | `gc events --seq` |

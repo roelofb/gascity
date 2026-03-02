@@ -2,13 +2,16 @@ description = """
 Polecat work lifecycle — the exported formula for coding agents.
 
 Callers pour this formula with `--var issue=<bead-id>` and assign it
-to a polecat. The polecat picks up the molecule via `bd mol current`
-and follows each step. Crash-safe: resume from the last completed step.
+to a polecat. The polecat reads the formula steps and follows each one
+in order. Crash-safe: re-read steps and resume from context.
+
+Formula steps are NOT materialized as child beads. The polecat reads
+the step descriptions and works through them sequentially.
 
 ## Polecat Contract (Self-Cleaning Model)
 
 1. Receive work (molecule poured with this formula, assigned to you)
-2. Follow steps: `bd mol current` → `bd close <step>` → repeat
+2. Follow steps in order (read descriptions, execute, move to next)
 3. Submit: push branch, set metadata on work bead, assign to refinery, exit
 4. You are GONE — Refinery merges, closes the bead
 
@@ -302,7 +305,7 @@ Tried: <what you've attempted>"
 gc agent request-restart
 ```
 This blocks until the controller kills your session. The next session
-resumes from `bd mol current`.
+resumes from context (re-reads formula steps, checks git/bead state).
 
 **Exit criteria:** Implementation complete, all changes committed."""
 

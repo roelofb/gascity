@@ -1,11 +1,15 @@
 description = """
-Witness patrol loop. Poured as a wisp on startup:
+Witness patrol loop. Poured as a root-only wisp on startup:
 
-  bd mol wisp mol-witness-patrol
+  bd mol wisp mol-witness-patrol --root-only
   bd update $WISP --assignee=$GC_AGENT
 
 Each wisp is ONE iteration: check for work, patrol, pour the next
-iteration. On crash, `bd mol current` shows exactly where you left off.
+iteration. On crash, re-read the formula steps and determine where
+you left off from context (bead state, mail state, last action).
+
+Formula steps are NOT materialized as child beads. Read the step
+descriptions below and work through them in order.
 
 The loop mechanism: every exit path (happy or early) pours the next
 wisp before burning this one. The prompt only bootstraps the first wisp.
@@ -75,7 +79,7 @@ gc agent request-restart
 This sets `GC_RESTART_REQUESTED` metadata on the session and blocks
 forever. The controller will kill and restart the session on the next
 reconcile tick. The current wisp stays assigned and the new session
-resumes it via `bd mol current`.
+the new session re-reads formula steps and resumes from context.
 
 **2. Check mail:**
 ```bash
@@ -142,7 +146,7 @@ For each bead with a polecat assignee:
 
 **Important**: Do NOT recover beads assigned to agents that are simply
 restarting (crash recovery). The controller restarts crashed agents,
-and the fresh session resumes work via `bd mol current`. Only recover
+and the fresh session resumes work from context. Only recover
 beads when the agent genuinely won't come back.
 
 **Step 2: For each orphaned bead, salvage work from the worktree.**
@@ -372,11 +376,11 @@ If context feels heavy or RSS is high:
 gc agent request-restart
 ```
 This blocks forever. The controller restarts you. The next wisp
-is already assigned — the new session resumes via `bd mol current`.
+is already assigned — the new session resumes from context.
 
 **2. Pour next iteration BEFORE burning:**
 ```bash
-NEXT=$(bd mol wisp mol-witness-patrol --json | jq -r '.new_epic_id')
+NEXT=$(bd mol wisp mol-witness-patrol --root-only --json | jq -r '.new_epic_id')
 bd update "$NEXT" --assignee=$GC_AGENT
 ```
 
@@ -395,7 +399,7 @@ On timeout: double the timeout (cap 300s) and proceed anyway.
 bd mol burn <this-wisp-id> --force
 ```
 
-The new wisp is ready. `bd mol current` will find it and start
+The new wisp is ready. Re-read formula steps to start
 the next patrol cycle.
 
 **Exit criteria:** Next wisp poured, this wisp burned."""

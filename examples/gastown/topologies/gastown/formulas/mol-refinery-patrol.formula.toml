@@ -1,12 +1,15 @@
 description = """
-Refinery patrol loop. Poured as a wisp on startup:
+Refinery patrol loop. Poured as a root-only wisp on startup:
 
-  bd mol wisp mol-refinery-patrol
+  bd mol wisp mol-refinery-patrol --root-only
   bd update $WISP --assignee=$GC_AGENT
 
 Each wisp is ONE iteration: check for work, merge one branch, pour
-the next iteration. On crash, `bd mol current` shows exactly where
-you left off.
+the next iteration. On crash, re-read the formula steps and determine
+where you left off from context (git state, bead state, last action).
+
+Formula steps are NOT materialized as child beads. Read the step
+descriptions below and work through them in order.
 
 The loop mechanism: every exit path (happy or early) pours the next
 wisp before burning this one. The prompt only bootstraps the first wisp.
@@ -78,7 +81,7 @@ gc agent request-restart
 This sets `GC_RESTART_REQUESTED` metadata on the session and blocks
 forever. The controller will kill and restart the session on the next
 reconcile tick. The current wisp stays assigned and the new session
-resumes it via `bd mol current`.
+the new session re-reads formula steps and resumes from context.
 
 **2. Check mail:**
 ```bash
@@ -156,7 +159,7 @@ bd update $WORK --status=open --assignee="" \
 4. Clean up temp branch: `git checkout {{target_branch}} && git branch -D temp`
 5. Pour next patrol iteration before burning:
 ```bash
-NEXT=$(bd mol wisp mol-refinery-patrol --json | jq -r '.new_epic_id')
+NEXT=$(bd mol wisp mol-refinery-patrol --root-only --json | jq -r '.new_epic_id')
 bd update "$NEXT" --assignee=$GC_AGENT
 ```
 6. Burn this wisp: `bd mol burn <wisp-id> --force`
@@ -215,7 +218,7 @@ If any check or test FAILED:
    - Clean up: `git checkout {{target_branch}} && git branch -D temp`
    - Pour next patrol iteration before burning:
      ```bash
-     NEXT=$(bd mol wisp mol-refinery-patrol --json | jq -r '.new_epic_id')
+     NEXT=$(bd mol wisp mol-refinery-patrol --root-only --json | jq -r '.new_epic_id')
      bd update "$NEXT" --assignee=$GC_AGENT
      ```
    - Burn this wisp: `bd mol burn <wisp-id> --force`
@@ -330,7 +333,7 @@ If auto_land = "false": skip this entirely.
 
 **2. Pour next iteration:**
 ```bash
-NEXT=$(bd mol wisp mol-refinery-patrol --json | jq -r '.new_epic_id')
+NEXT=$(bd mol wisp mol-refinery-patrol --root-only --json | jq -r '.new_epic_id')
 bd update "$NEXT" --assignee=$GC_AGENT
 ```
 
@@ -339,4 +342,4 @@ bd update "$NEXT" --assignee=$GC_AGENT
 bd mol burn <this-wisp-id> --force
 ```
 
-Close this step. The new wisp is ready — `bd mol current` will find it."""
+Close this step. The new wisp is ready — re-read formula steps to begin."""

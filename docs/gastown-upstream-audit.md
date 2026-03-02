@@ -166,13 +166,21 @@ Support for integration branches (not just always merging to main).
 
 From batch 3 analysis (session summary).
 
-- [ ] Root-only wisps: formula steps shown inline via `gt patrol report`
-  instead of materialized as individual wisp rows. Dramatically reduces
-  wisp table bloat.
-- [ ] Deacon patrol formula: gated check command, stale dog detection,
-  heartbeat steps updated.
-- **Action:** Evaluate impact on deacon patrol and witness formulas in
-  examples/gastown. Update formula step reporting model.
+- [x] Root-only wisps: `--root-only` flag added to all `bd mol wisp` calls
+  in patrol formulas (deacon, witness, refinery) and polecat work formula.
+  Formula steps are no longer materialized as child beads — agents read step
+  descriptions directly from the formula definition. Reduces Dolt write churn
+  by ~15x.
+- [x] All `bd mol current` / `bd mol step done` references removed from
+  shared templates (following-mol, propulsion), all role prompts, and all
+  formula descriptions. Replaced with "read formula steps and work through
+  them in order" pattern.
+- [x] Crash recovery: agents re-read formula steps on restart and determine
+  resume position from context (git state, bead state, last completed action).
+  No step-tracking metadata needed on the wisp bead.
+- **Disposition:** No new `gc` command needed (upstream's `gt prime` with
+  `showFormulaSteps()` is unnecessary — the LLM reads formula steps directly).
+  We keep the explicit `bd mol wisp`/`bd mol burn` dance but with `--root-only`.
 
 ---
 

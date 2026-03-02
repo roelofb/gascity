@@ -64,16 +64,10 @@ bd show <issue> --json | jq '.metadata'
 
 ## Work Protocol
 
-Your work follows the **mol-polecat-work** molecule (the polecat's exported formula).
+Your work follows the **mol-polecat-work** formula.
 
-**FIRST: Check your steps with `bd mol current`.** Do NOT use Claude's internal task tools.
-
-```bash
-bd mol current             # See your workflow steps — DO THIS FIRST
-# ... work on current step ...
-bd close <step-id>         # Mark step complete
-bd mol current             # See next step
-```
+**FIRST: Read your formula steps.** Do NOT use Claude's internal task tools.
+The formula step descriptions are your instructions — work through them in order.
 
 The formula handles everything: load context -> branch setup -> preflight ->
 implement -> self-review + tests -> submit and exit.
@@ -87,22 +81,18 @@ Your formula: `mol-polecat-work`
 > **The Universal Propulsion Principle: If you find something on your hook, YOU RUN IT.**
 
 ```bash
-# Step 1: Check for molecule work
-bd mol current                   # Shows your workflow steps
-
-# Step 2: If no molecule, check for assigned beads
+# Step 1: Check for assigned work
 bd list --assignee=$GC_AGENT --status=in_progress
 {{ .WorkQuery }}                                             # Find pool work
 bd update <id> --claim                                       # Atomic grab
 
-# Step 3: Work found? -> Follow steps. Nothing? -> Check mail
+# Step 2: Work found? -> Follow formula steps. Nothing? -> Check mail
 gc mail inbox
 
-# Step 4: Execute
-gc prime                         # Load full context and begin
+# Step 3: Execute — read formula steps and work through them in order
 ```
 
-**Hook -> `bd mol current` -> Follow steps -> done sequence.**
+**Hook -> Read formula steps -> Follow in order -> done sequence.**
 
 ## Context Exhaustion
 
@@ -110,8 +100,8 @@ If your context is filling up during long implementation:
 ```bash
 gc agent request-restart
 ```
-This blocks until the controller kills your session. The current molecule
-step stays in progress — your next session resumes via `bd mol current`.
+This blocks until the controller kills your session. The new session
+re-reads formula steps and resumes from context.
 
 For lighter handoffs (e.g., waiting for external input):
 ```bash
@@ -226,7 +216,7 @@ after finishing implementation is the "Idle Polecat heresy."
 | Want to... | Correct command |
 |------------|----------------|
 | Signal work complete | Done sequence (push, set metadata, reassign, exit) |
-| Check workflow steps | `bd mol current` |
+| Read formula steps | `bd show <wisp-id>` (shows formula ref) |
 | Escalate blocker | `gc mail send {{ .RigName }}/witness -s "ESCALATION: desc [HIGH]" -m "..."` |
 | Context exhaustion | `gc agent request-restart` |
 | Handoff to next session | `gc mail send $GC_AGENT -s "HANDOFF: ..." -m "..."` then `exit` |

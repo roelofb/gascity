@@ -72,7 +72,7 @@ This is why the witness exists. Beads get orphaned when:
 - Controller quarantined a crash-looping agent
 
 The drain protocol does NOT release beads. Crash recovery resumes work
-via `bd mol current`. But when an agent genuinely won't come back, its
+via formula step resumption. But when an agent genuinely won't come back, its
 beads sit assigned forever unless the witness recovers them.
 
 **Detection:** Compare bead assignees against `gc agent list`. If the
@@ -146,24 +146,20 @@ Your formula: `mol-witness-patrol`
 > **The Universal Propulsion Principle: If you find something on your hook, YOU RUN IT.**
 
 ```bash
-# Step 1: Check for molecule work
-bd mol current                   # Shows your workflow steps
-
-# Step 2: If no molecule, check for assigned beads
+# Step 1: Check for assigned work
 bd list --assignee=$GC_AGENT --status=in_progress
 
-# Step 3: Nothing? Check mail for attached work
+# Step 2: Nothing? Check mail for attached work
 gc mail inbox
 
-# Step 4: Still nothing? Create patrol wisp
-NEW_WISP=$(bd mol wisp mol-witness-patrol --json | jq -r '.new_epic_id')
+# Step 3: Still nothing? Create patrol wisp (root-only — no child step beads)
+NEW_WISP=$(bd mol wisp mol-witness-patrol --root-only --json | jq -r '.new_epic_id')
 bd update "$NEW_WISP" --assignee={{ .RigName }}/witness
 
-# Step 5: Execute
-gc prime                         # Load full context and begin
+# Step 4: Execute — read formula steps and work through them in order
 ```
 
-**Hook -> `bd mol current` -> Follow steps -> pour next iteration.**
+**Hook -> Read formula steps -> Follow in order -> pour next iteration.**
 
 ## Context Exhaustion
 
@@ -171,8 +167,8 @@ If your context is filling up during patrol:
 ```bash
 gc agent request-restart
 ```
-This blocks until the controller kills your session. The current molecule
-step stays in progress — your next session resumes via `bd mol current`.
+This blocks until the controller kills your session. The new session
+re-reads formula steps and resumes from context.
 
 ---
 
@@ -239,7 +235,7 @@ gc mail send mayor/ -s "ESCALATION: Brief description [HIGH]" -m "Details"
 
 | Want to... | Correct command |
 |------------|----------------|
-| Check workflow steps | `bd mol current` |
+| Pour next wisp | `bd mol wisp mol-witness-patrol --root-only` |
 | Context exhaustion | `gc agent request-restart` |
 | Recover orphaned bead | `bd update <id> --status=open --assignee=""` |
 | Salvage worktree work | `git add -A && git commit && git push origin HEAD` |

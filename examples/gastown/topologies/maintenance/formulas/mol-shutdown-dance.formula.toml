@@ -11,8 +11,8 @@ bd create --type=warrant \
 ```
 
 The dog pool picks up the warrant and pours this formula. Each wisp is
-one shutdown dance for one target. On crash, `bd mol current` resumes
-from the last completed step.
+one shutdown dance for one target. On crash, re-read formula steps and
+resume from context (check target state, attempt history).
 
 ## State Machine
 
