@@ -392,12 +392,15 @@ Go code making decisions that belong in prompts — moved to prompts.
   Blocked on Section 1 (persistent polecat pool).
 - [ ] Polecat persist-findings.
   Blocked on Sections 1/2 (polecat lifecycle).
-- [ ] Settings: `skipDangerousModePermissionPrompt`.
-  Add to overlay settings.json files.
-- [ ] Dangerous-command guard hooks.
-  Add pre-tool hooks to overlay files.
-- **Action:** Items 1-3 unblock after Sections 1/2. Items 4-5 are
-  independent overlay additions.
+- [-] Settings: `skipDangerousModePermissionPrompt`.
+  N/A — Gas Town doesn't have this setting either. Gas City already handles
+  permission warnings via `AcceptStartupDialogs()` in dialog.go.
+- [-] Dangerous-command guard hooks.
+  N/A — prompts already describe preferred workflow (push to main, use
+  worktrees). Hard-blocking PRs and feature branches limits implementer
+  creativity. The witness wisp-vs-molecule guards remain (correctness),
+  but workflow guards are prompt-level guidance, not enforcement.
+- **Action:** Items 1-3 unblock after Sections 1/2.
 
 ---
 
@@ -413,4 +416,4 @@ Go code making decisions that belong in prompts — moved to prompts.
 8. [x] **Infrastructure Dogs** (Section 8) — new formulas + dolt-health extraction + fallback agents
 9. [x] **Config/Operational** (Section 12) — SDK-level features
 10. [-] **Formula System** (Section 10) — N/A, designed minimal-first
-11. [ ] Remaining sections (5, 7, 13) — 5+7 done; 13 blocked on S1/S2
+11. [ ] Remaining sections (5, 7, 13) — 5+7 done; 13.4-5 done; 13.1-3 blocked on S1/S2
