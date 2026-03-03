@@ -256,7 +256,7 @@ func cmdInitFromFile(fileArg string, args []string, stdout, stderr io.Writer) in
 }
 
 // cmdInitFromTOMLFile initializes a city by copying a user-provided TOML
-// file as city.toml. Creates .gc/, rigs/, prompts/, and runs bead init.
+// file as city.toml. Creates .gc/, rigs/, .gc/prompts/, and runs bead init.
 func cmdInitFromTOMLFile(fs fsys.FS, tomlSrc, cityPath string, stdout, stderr io.Writer) int {
 	// Validate the source file parses as a valid city config.
 	data, err := os.ReadFile(tomlSrc)
@@ -430,10 +430,10 @@ func installClaudeHooks(fs fsys.FS, cityPath string) int {
 	return 0
 }
 
-// writeDefaultPrompts creates the prompts/ directory and writes all
+// writeDefaultPrompts creates the .gc/prompts/ directory and writes all
 // embedded prompt files used across the tutorials.
 func writeDefaultPrompts(fs fsys.FS, cityPath string, stderr io.Writer) int {
-	promptsDir := filepath.Join(cityPath, "prompts")
+	promptsDir := filepath.Join(cityPath, ".gc", "prompts")
 	if err := fs.MkdirAll(promptsDir, 0o755); err != nil {
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
@@ -478,10 +478,20 @@ func writeDefaultFormulas(fs fsys.FS, cityPath string, stderr io.Writer) int {
 
 // initFromSkip returns true for files and directories that should be excluded
 // when copying a city template directory via --from. Skips .gc/ runtime state
-// and Go test files.
+// (but preserves .gc/prompts/, which is user-editable config) and Go test files.
 func initFromSkip(relPath string, isDir bool) bool {
-	top, _, _ := strings.Cut(relPath, string(filepath.Separator))
+	top, rest, _ := strings.Cut(relPath, string(filepath.Separator))
 	if top == ".gc" {
+		// Let the walker enter .gc/ so it can reach .gc/prompts/.
+		if rest == "" {
+			return false
+		}
+		// Allow .gc/prompts/ through — it's user-editable config, not runtime state.
+		sub, _, _ := strings.Cut(rest, string(filepath.Separator))
+		if sub == "prompts" {
+			return false
+		}
+		// Skip all other .gc/ contents (runtime state).
 		return true
 	}
 	if !isDir && strings.HasSuffix(filepath.Base(relPath), "_test.go") {

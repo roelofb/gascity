@@ -459,16 +459,16 @@ func TestDoInitSuccess(t *testing.T) {
 	if !f.Dirs[filepath.Join("/bright-lights", "rigs")] {
 		t.Error("rigs/ not created")
 	}
-	if !f.Dirs[filepath.Join("/bright-lights", "prompts")] {
-		t.Error("prompts/ not created")
+	if !f.Dirs[filepath.Join("/bright-lights", ".gc", "prompts")] {
+		t.Error(".gc/prompts/ not created")
 	}
 
 	// Verify prompt files were written.
-	if _, ok := f.Files[filepath.Join("/bright-lights", "prompts", "mayor.md")]; !ok {
-		t.Error("prompts/mayor.md not written")
+	if _, ok := f.Files[filepath.Join("/bright-lights", ".gc", "prompts", "mayor.md")]; !ok {
+		t.Error(".gc/prompts/mayor.md not written")
 	}
-	if _, ok := f.Files[filepath.Join("/bright-lights", "prompts", "worker.md")]; !ok {
-		t.Error("prompts/worker.md not written")
+	if _, ok := f.Files[filepath.Join("/bright-lights", ".gc", "prompts", "worker.md")]; !ok {
+		t.Error(".gc/prompts/worker.md not written")
 	}
 
 	// Verify written config parses correctly.
@@ -486,8 +486,8 @@ func TestDoInitSuccess(t *testing.T) {
 	if cfg.Agents[0].Name != "mayor" {
 		t.Errorf("Agents[0].Name = %q, want %q", cfg.Agents[0].Name, "mayor")
 	}
-	if cfg.Agents[0].PromptTemplate != "prompts/mayor.md" {
-		t.Errorf("Agents[0].PromptTemplate = %q, want %q", cfg.Agents[0].PromptTemplate, "prompts/mayor.md")
+	if cfg.Agents[0].PromptTemplate != ".gc/prompts/mayor.md" {
+		t.Errorf("Agents[0].PromptTemplate = %q, want %q", cfg.Agents[0].PromptTemplate, ".gc/prompts/mayor.md")
 	}
 }
 
@@ -506,7 +506,7 @@ name = "bright-lights"
 
 [[agents]]
 name = "mayor"
-prompt_template = "prompts/mayor.md"
+prompt_template = ".gc/prompts/mayor.md"
 `
 	if got != want {
 		t.Errorf("city.toml content:\ngot:\n%s\nwant:\n%s", got, want)
@@ -964,7 +964,7 @@ provider = "claude"
 
 [[agents]]
 name = "mayor"
-prompt_template = "prompts/mayor.md"
+prompt_template = ".gc/prompts/mayor.md"
 
 [[agents]]
 name = "worker"
@@ -1091,10 +1091,10 @@ func TestDoInitFromDirSuccess(t *testing.T) {
 		[]byte("[workspace]\nname = \"template\"\nprovider = \"claude\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(srcDir, "prompts"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(srcDir, ".gc", "prompts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(srcDir, "prompts", "mayor.md"), []byte("prompt"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(srcDir, ".gc", "prompts", "mayor.md"), []byte("prompt"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1134,8 +1134,8 @@ func TestDoInitFromDirSuccess(t *testing.T) {
 	}
 
 	// Verify files were copied.
-	if _, err := os.Stat(filepath.Join(cityPath, "prompts", "mayor.md")); err != nil {
-		t.Errorf("prompts/mayor.md not copied: %v", err)
+	if _, err := os.Stat(filepath.Join(cityPath, ".gc", "prompts", "mayor.md")); err != nil {
+		t.Errorf(".gc/prompts/mayor.md not copied: %v", err)
 	}
 
 	// Verify .gc/ was created.
@@ -1313,15 +1313,16 @@ func TestInitFromSkip(t *testing.T) {
 		isDir   bool
 		want    bool
 	}{
-		{".gc", true, true},
+		{".gc", true, false},
 		{".gc/state.json", false, true},
 		{filepath.Join(".gc", "agents", "mayor.json"), false, true},
+		{filepath.Join(".gc", "prompts"), true, false},
+		{filepath.Join(".gc", "prompts", "mayor.md"), false, false},
 		{"gastown_test.go", false, true},
 		{filepath.Join("sub", "foo_test.go"), false, true},
 		{"city.toml", false, false},
 		{"scripts", true, false},
 		{"helper.go", false, false},
-		{"prompts", true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.relPath, func(t *testing.T) {
@@ -1701,7 +1702,7 @@ func TestDoAgentAddWithPromptTemplate(t *testing.T) {
 	f.Files[filepath.Join("/city", "city.toml")] = data
 
 	var stdout, stderr bytes.Buffer
-	code := doAgentAdd(f, "/city", "worker", "prompts/worker.md", "", false, &stdout, &stderr)
+	code := doAgentAdd(f, "/city", "worker", ".gc/prompts/worker.md", "", false, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("doAgentAdd = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -1715,8 +1716,8 @@ func TestDoAgentAddWithPromptTemplate(t *testing.T) {
 	if len(got.Agents) != 2 {
 		t.Fatalf("len(Agents) = %d, want 2", len(got.Agents))
 	}
-	if got.Agents[1].PromptTemplate != "prompts/worker.md" {
-		t.Errorf("Agents[1].PromptTemplate = %q, want %q", got.Agents[1].PromptTemplate, "prompts/worker.md")
+	if got.Agents[1].PromptTemplate != ".gc/prompts/worker.md" {
+		t.Errorf("Agents[1].PromptTemplate = %q, want %q", got.Agents[1].PromptTemplate, ".gc/prompts/worker.md")
 	}
 }
 
@@ -1836,7 +1837,7 @@ func TestDoPrimeWithKnownAgent(t *testing.T) {
 	if err := os.MkdirAll(gcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	promptsDir := filepath.Join(dir, "prompts")
+	promptsDir := filepath.Join(dir, ".gc", "prompts")
 	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1849,7 +1850,7 @@ name = "test-city"
 
 [[agents]]
 name = "mayor"
-prompt_template = "prompts/mayor.md"
+prompt_template = ".gc/prompts/mayor.md"
 `
 	if err := os.WriteFile(filepath.Join(dir, "city.toml"), []byte(toml), 0o644); err != nil {
 		t.Fatal(err)
@@ -1884,7 +1885,7 @@ name = "test-city"
 
 [[agents]]
 name = "mayor"
-prompt_template = "prompts/mayor.md"
+prompt_template = ".gc/prompts/mayor.md"
 `
 	if err := os.WriteFile(filepath.Join(dir, "city.toml"), []byte(toml), 0o644); err != nil {
 		t.Fatal(err)
@@ -1932,7 +1933,7 @@ func TestDoPrimeBareName(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, ".gc"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	promptsDir := filepath.Join(dir, "prompts")
+	promptsDir := filepath.Join(dir, ".gc", "prompts")
 	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1946,7 +1947,7 @@ name = "test-city"
 [[agents]]
 name = "polecat"
 dir = "myrig"
-prompt_template = "prompts/polecat.md"
+prompt_template = ".gc/prompts/polecat.md"
 
 [agents.pool]
 min = 1
@@ -2021,7 +2022,7 @@ func TestDoAgentAddWithDir(t *testing.T) {
 	f.Files[filepath.Join("/city", "city.toml")] = data
 
 	var stdout, stderr bytes.Buffer
-	code := doAgentAdd(f, "/city", "builder", "prompts/worker.md", "hello-world", false, &stdout, &stderr)
+	code := doAgentAdd(f, "/city", "builder", ".gc/prompts/worker.md", "hello-world", false, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("doAgentAdd = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -2049,7 +2050,7 @@ func TestDoAgentAddWithSuspended(t *testing.T) {
 	f.Files[filepath.Join("/city", "city.toml")] = data
 
 	var stdout, stderr bytes.Buffer
-	code := doAgentAdd(f, "/city", "builder", "prompts/worker.md", "hello-world", true, &stdout, &stderr)
+	code := doAgentAdd(f, "/city", "builder", ".gc/prompts/worker.md", "hello-world", true, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("doAgentAdd = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -2078,7 +2079,7 @@ func TestDoAgentListFilterByDir(t *testing.T) {
 		Workspace: config.Workspace{Name: "bright-lights"},
 		Agents: []config.Agent{
 			{Name: "mayor"},
-			{Name: "builder", Dir: "hello-world", PromptTemplate: "prompts/worker.md"},
+			{Name: "builder", Dir: "hello-world", PromptTemplate: ".gc/prompts/worker.md"},
 			{Name: "tester", Dir: "other-project"},
 		},
 	}

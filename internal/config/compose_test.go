@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -974,5 +976,105 @@ provider = "exec:/usr/local/bin/events-bridge"
 	}
 	if cfg.Events.Provider != "exec:/usr/local/bin/events-bridge" {
 		t.Errorf("Events.Provider = %q, want %q", cfg.Events.Provider, "exec:/usr/local/bin/events-bridge")
+	}
+}
+
+// initBareRepoWithFragment creates a bare git repo containing a TOML config
+// fragment file. Returns the bare repo path.
+func initBareRepoWithFragment(t *testing.T, fragmentPath, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "work")
+	bareDir := filepath.Join(dir, "fragments.git")
+
+	mustGit(t, "", "init", workDir)
+
+	fragFile := filepath.Join(workDir, fragmentPath)
+	if err := os.MkdirAll(filepath.Dir(fragFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fragFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workDir, "add", "-A")
+	mustGit(t, workDir, "commit", "-m", "add fragment")
+	mustGit(t, workDir, "clone", "--bare", workDir, bareDir)
+
+	return bareDir
+}
+
+func TestLoadWithIncludes_RemoteInclude(t *testing.T) {
+	// Create a bare git repo with a TOML fragment.
+	fragment := `
+[[agents]]
+name = "reviewer"
+`
+	bare := initBareRepoWithFragment(t, "agents.toml", fragment)
+
+	// Set up a city that includes the remote repo.
+	cityDir := t.TempDir()
+	gcDir := filepath.Join(cityDir, ".gc")
+	if err := os.MkdirAll(gcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use file:// protocol to reference the bare repo with //subpath.
+	remoteInclude := "file://" + bare + "//agents.toml"
+	cityToml := `
+include = ["` + remoteInclude + `"]
+
+[workspace]
+name = "test-remote"
+
+[[agents]]
+name = "mayor"
+`
+	cityTomlPath := filepath.Join(cityDir, "city.toml")
+	if err := os.WriteFile(cityTomlPath, []byte(cityToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadWithIncludes(fsys.OSFS{}, cityTomlPath)
+	if err != nil {
+		t.Fatalf("LoadWithIncludes with remote include: %v", err)
+	}
+
+	// Root agent + remote fragment agent.
+	if len(cfg.Agents) != 2 {
+		t.Fatalf("len(Agents) = %d, want 2", len(cfg.Agents))
+	}
+	if cfg.Agents[0].Name != "mayor" {
+		t.Errorf("Agents[0].Name = %q, want %q", cfg.Agents[0].Name, "mayor")
+	}
+	if cfg.Agents[1].Name != "reviewer" {
+		t.Errorf("Agents[1].Name = %q, want %q", cfg.Agents[1].Name, "reviewer")
+	}
+}
+
+func TestLoadWithIncludes_RemoteIncludeError(t *testing.T) {
+	// A bogus remote URL should produce a clear error, not panic.
+	cityDir := t.TempDir()
+	gcDir := filepath.Join(cityDir, ".gc")
+	if err := os.MkdirAll(gcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cityToml := `
+include = ["https://example.com/nonexistent.git//agents.toml"]
+
+[workspace]
+name = "test-fail"
+`
+	cityTomlPath := filepath.Join(cityDir, "city.toml")
+	if err := os.WriteFile(cityTomlPath, []byte(cityToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := LoadWithIncludes(fsys.OSFS{}, cityTomlPath)
+	if err == nil {
+		t.Fatal("expected error for bogus remote include, got nil")
+	}
+	if !strings.Contains(err.Error(), "fetching include") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "fetching include")
 	}
 }

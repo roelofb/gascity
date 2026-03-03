@@ -960,7 +960,7 @@ func ValidateRigs(rigs []Rig, cityName string) error {
 func DefaultCity(name string) City {
 	return City{
 		Workspace: Workspace{Name: name},
-		Agents:    []Agent{{Name: "mayor", PromptTemplate: "prompts/mayor.md"}},
+		Agents:    []Agent{{Name: "mayor", PromptTemplate: ".gc/prompts/mayor.md"}},
 	}
 }
 
@@ -978,7 +978,7 @@ func WizardCity(name, provider, startCommand string) City {
 	return City{
 		Workspace: ws,
 		Agents: []Agent{
-			{Name: "mayor", PromptTemplate: "prompts/mayor.md"},
+			{Name: "mayor", PromptTemplate: ".gc/prompts/mayor.md"},
 		},
 	}
 }

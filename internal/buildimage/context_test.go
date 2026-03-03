@@ -16,8 +16,8 @@ func TestAssembleContextBasic(t *testing.T) {
 name = "test-city"
 `)
 	mkdirAll(t, cityDir, ".gc")
-	mkdirAll(t, cityDir, "prompts")
-	writeFile(t, cityDir, "prompts/mayor.md", "You are the mayor.")
+	mkdirAll(t, cityDir, ".gc/prompts")
+	writeFile(t, cityDir, ".gc/prompts/mayor.md", "You are the mayor.")
 
 	err := AssembleContext(Options{
 		CityPath:  cityDir,
@@ -40,8 +40,8 @@ name = "test-city"
 	// Verify workspace/city.toml exists.
 	assertFileExists(t, outputDir, "workspace/city.toml")
 
-	// Verify workspace/prompts/mayor.md exists.
-	assertFileExists(t, outputDir, "workspace/prompts/mayor.md")
+	// Verify workspace/.gc/prompts/mayor.md exists.
+	assertFileExists(t, outputDir, "workspace/.gc/prompts/mayor.md")
 
 	// Verify .gc directory was copied (but runtime files excluded).
 	assertFileExists(t, outputDir, "workspace/.gc")
@@ -156,7 +156,7 @@ func TestExcludedPath(t *testing.T) {
 		{"path/to/secret.key", true},
 		{"city.toml", false},
 		{".gc/formulas/test.toml", false},
-		{"prompts/mayor.md", false},
+		{".gc/prompts/mayor.md", false},
 		{".gc/settings.json", false},
 	}
 	for _, tt := range tests {

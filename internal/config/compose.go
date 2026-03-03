@@ -57,7 +57,16 @@ func LoadWithIncludes(fs fsys.FS, path string, extraIncludes ...string) (*City, 
 	root.Include = nil
 
 	for _, inc := range includes {
-		fragPath := resolveConfigPath(inc, cityRoot, cityRoot)
+		var fragPath string
+		if isRemoteInclude(inc) || isGitHubTreeURL(inc) {
+			resolved, err := resolveTopologyRef(inc, cityRoot, cityRoot)
+			if err != nil {
+				return nil, nil, fmt.Errorf("fetching include %q: %w", inc, err)
+			}
+			fragPath = resolved
+		} else {
+			fragPath = resolveConfigPath(inc, cityRoot, cityRoot)
+		}
 
 		fragData, err := fs.ReadFile(fragPath)
 		if err != nil {

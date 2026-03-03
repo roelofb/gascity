@@ -29,6 +29,9 @@ func TestIsRemoteInclude(t *testing.T) {
 
 		// HTTP.
 		{"http://internal.example.com/repo.git", true},
+
+		// File protocol (local git repos).
+		{"file:///tmp/repo.git", true},
 	}
 
 	for _, tt := range tests {

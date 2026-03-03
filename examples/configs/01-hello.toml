@@ -9,7 +9,7 @@ name = "my-city"
 
 [[agents]]
 name = "mayor"
-prompt_template = "prompts/mayor.md"
+prompt_template = ".gc/prompts/mayor.md"
 
 [beads]
 provider = "bd"

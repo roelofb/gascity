@@ -10,19 +10,19 @@ provider = "claude"
 
 [[agents]]
 name = "mayor"
-prompt_template = "prompts/mayor.md"
+prompt_template = ".gc/prompts/mayor.md"
 
 [[agents]]
 name = "worker-1"
-prompt_template = "prompts/worker.md"
+prompt_template = ".gc/prompts/worker.md"
 
 [[agents]]
 name = "worker-2"
-prompt_template = "prompts/worker.md"
+prompt_template = ".gc/prompts/worker.md"
 
 [[agents]]
 name = "worker-3"
-prompt_template = "prompts/worker.md"
+prompt_template = ".gc/prompts/worker.md"
 
 [beads]
 provider = "bd"

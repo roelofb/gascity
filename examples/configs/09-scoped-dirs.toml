@@ -12,17 +12,17 @@ provider = "claude"
 
 [[agents]]
 name = "mayor"
-prompt_template = "prompts/mayor.md"
+prompt_template = ".gc/prompts/mayor.md"
 
 [[agents]]
 name = "frontend"
 dir = "projects/frontend"
-prompt_template = "prompts/scoped-worker.md"
+prompt_template = ".gc/prompts/scoped-worker.md"
 
 [[agents]]
 name = "backend"
 dir = "projects/backend"
-prompt_template = "prompts/scoped-worker.md"
+prompt_template = ".gc/prompts/scoped-worker.md"
 
 [beads]
 provider = "bd"

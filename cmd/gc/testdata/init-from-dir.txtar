@@ -15,8 +15,8 @@ stdout 'template'
 exists $WORK/my-city/city.toml
 exec grep 'my-city' $WORK/my-city/city.toml
 
-# Verify files were copied.
-exists $WORK/my-city/prompts/mayor.md
+# Verify .gc/prompts were copied.
+exists $WORK/my-city/.gc/prompts/mayor.md
 
 # Verify .gc/ was created.
 exists $WORK/my-city/.gc
@@ -24,7 +24,7 @@ exists $WORK/my-city/.gc
 # Verify _test.go files were skipped.
 ! exists $WORK/my-city/example_test.go
 
-# Verify source .gc/ was not copied.
+# Verify source .gc/ runtime state was not copied.
 ! exists $WORK/my-city/.gc/old-state.json
 
 # gc init --from rejects already-initialized city.
@@ -45,9 +45,9 @@ provider = "claude"
 
 [[agents]]
 name = "mayor"
-prompt_template = "prompts/mayor.md"
+prompt_template = ".gc/prompts/mayor.md"
 
--- template/prompts/mayor.md --
+-- template/.gc/prompts/mayor.md --
 You are the mayor.
 
 -- template/example_test.go --

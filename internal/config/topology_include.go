@@ -14,12 +14,13 @@ import (
 const includeCacheDir = "_inc"
 
 // isRemoteInclude reports whether s is a remote include URL
-// (git@, ssh://, https://, or http://).
+// (git@, ssh://, https://, http://, or file://).
 func isRemoteInclude(s string) bool {
 	return strings.HasPrefix(s, "git@") ||
 		strings.HasPrefix(s, "ssh://") ||
 		strings.HasPrefix(s, "https://") ||
-		strings.HasPrefix(s, "http://")
+		strings.HasPrefix(s, "http://") ||
+		strings.HasPrefix(s, "file://")
 }
 
 // parseRemoteInclude splits a remote include string into source, subpath,

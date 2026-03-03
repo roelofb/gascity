@@ -22,8 +22,8 @@ func TestDefaultCity(t *testing.T) {
 	if c.Agents[0].Name != "mayor" {
 		t.Errorf("Agents[0].Name = %q, want %q", c.Agents[0].Name, "mayor")
 	}
-	if c.Agents[0].PromptTemplate != "prompts/mayor.md" {
-		t.Errorf("Agents[0].PromptTemplate = %q, want %q", c.Agents[0].PromptTemplate, "prompts/mayor.md")
+	if c.Agents[0].PromptTemplate != ".gc/prompts/mayor.md" {
+		t.Errorf("Agents[0].PromptTemplate = %q, want %q", c.Agents[0].PromptTemplate, ".gc/prompts/mayor.md")
 	}
 }
 
@@ -78,7 +78,7 @@ func TestMarshalDefaultCityFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	want := "[workspace]\nname = \"bright-lights\"\n\n[[agents]]\nname = \"mayor\"\nprompt_template = \"prompts/mayor.md\"\n"
+	want := "[workspace]\nname = \"bright-lights\"\n\n[[agents]]\nname = \"mayor\"\nprompt_template = \".gc/prompts/mayor.md\"\n"
 	if string(data) != want {
 		t.Errorf("Marshal output:\ngot:\n%s\nwant:\n%s", data, want)
 	}
@@ -461,11 +461,11 @@ name = "bright-lights"
 
 [[agents]]
 name = "mayor"
-prompt_template = "prompts/mayor.md"
+prompt_template = ".gc/prompts/mayor.md"
 
 [[agents]]
 name = "worker"
-prompt_template = "prompts/worker.md"
+prompt_template = ".gc/prompts/worker.md"
 `)
 	cfg, err := Parse(data)
 	if err != nil {
@@ -474,11 +474,11 @@ prompt_template = "prompts/worker.md"
 	if len(cfg.Agents) != 2 {
 		t.Fatalf("len(Agents) = %d, want 2", len(cfg.Agents))
 	}
-	if cfg.Agents[0].PromptTemplate != "prompts/mayor.md" {
-		t.Errorf("Agents[0].PromptTemplate = %q, want %q", cfg.Agents[0].PromptTemplate, "prompts/mayor.md")
+	if cfg.Agents[0].PromptTemplate != ".gc/prompts/mayor.md" {
+		t.Errorf("Agents[0].PromptTemplate = %q, want %q", cfg.Agents[0].PromptTemplate, ".gc/prompts/mayor.md")
 	}
-	if cfg.Agents[1].PromptTemplate != "prompts/worker.md" {
-		t.Errorf("Agents[1].PromptTemplate = %q, want %q", cfg.Agents[1].PromptTemplate, "prompts/worker.md")
+	if cfg.Agents[1].PromptTemplate != ".gc/prompts/worker.md" {
+		t.Errorf("Agents[1].PromptTemplate = %q, want %q", cfg.Agents[1].PromptTemplate, ".gc/prompts/worker.md")
 	}
 }
 
@@ -576,8 +576,8 @@ func TestWizardCity(t *testing.T) {
 	if c.Agents[0].Name != "mayor" {
 		t.Errorf("Agents[0].Name = %q, want %q", c.Agents[0].Name, "mayor")
 	}
-	if c.Agents[0].PromptTemplate != "prompts/mayor.md" {
-		t.Errorf("Agents[0].PromptTemplate = %q, want %q", c.Agents[0].PromptTemplate, "prompts/mayor.md")
+	if c.Agents[0].PromptTemplate != ".gc/prompts/mayor.md" {
+		t.Errorf("Agents[0].PromptTemplate = %q, want %q", c.Agents[0].PromptTemplate, ".gc/prompts/mayor.md")
 	}
 }
 
@@ -983,7 +983,7 @@ name = "pool-city"
 
 [[agents]]
 name = "worker"
-prompt_template = "prompts/pool-worker.md"
+prompt_template = ".gc/prompts/pool-worker.md"
 start_command = "echo hello"
 
 [agents.pool]
