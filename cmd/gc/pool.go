@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -201,6 +202,29 @@ func deepCopyAgent(src *config.Agent, name, dir string) config.Agent {
 		dst.Attach = &v
 	}
 	return dst
+}
+
+// runPoolOnBoot runs on_boot commands for all pool agents at controller startup.
+// Errors are logged but not fatal — the controller continues regardless.
+func runPoolOnBoot(cfg *config.City, cityPath string, runner ScaleCheckRunner, stderr io.Writer) {
+	for _, a := range cfg.Agents {
+		if !a.IsPool() {
+			continue
+		}
+		cmd := a.EffectiveOnBoot()
+		if cmd == "" {
+			continue
+		}
+		dir := cityPath
+		if a.Dir != "" {
+			if d, err := resolveAgentDir(cityPath, a.Dir); err == nil {
+				dir = d
+			}
+		}
+		if _, err := runner(cmd, dir); err != nil {
+			fmt.Fprintf(stderr, "on_boot %s: %v\n", a.QualifiedName(), err) //nolint:errcheck // best-effort stderr
+		}
+	}
 }
 
 // poolAgents builds agent.Agent instances for a pool at the desired count.

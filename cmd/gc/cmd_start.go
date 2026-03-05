@@ -96,6 +96,49 @@ func computePoolSessions(cfg *config.City, cityName string) map[string]time.Dura
 	return ps
 }
 
+// poolDeathInfo holds the on_death command and working directory for a pool instance.
+type poolDeathInfo struct {
+	Command string // on_death shell command (pre-baked with instance QN)
+	Dir     string // working directory for bd commands
+}
+
+// computePoolDeathHandlers builds a map from session name to death handler
+// for every pool instance (1..max). Used to detect and handle pool deaths.
+func computePoolDeathHandlers(cfg *config.City, cityName, cityPath string) map[string]poolDeathInfo {
+	handlers := make(map[string]poolDeathInfo)
+	st := cfg.Workspace.SessionTemplate
+	for _, a := range cfg.Agents {
+		if !a.IsPool() {
+			continue
+		}
+		pool := a.EffectivePool()
+		if pool.Max <= 1 {
+			continue
+		}
+		for i := 1; i <= pool.Max; i++ {
+			instanceName := fmt.Sprintf("%s-%d", a.Name, i)
+			instance := config.Agent{Name: instanceName, Dir: a.Dir, Pool: a.Pool, PoolName: a.QualifiedName()}
+			cmd := instance.EffectiveOnDeath()
+			if cmd == "" {
+				continue
+			}
+			dir := cityPath
+			if a.Dir != "" {
+				if d, err := resolveAgentDir(cityPath, a.Dir); err == nil {
+					dir = d
+				}
+			}
+			qualifiedInstance := instanceName
+			if a.Dir != "" {
+				qualifiedInstance = a.Dir + "/" + instanceName
+			}
+			sn := sessionName(cityName, qualifiedInstance, st)
+			handlers[sn] = poolDeathInfo{Command: cmd, Dir: dir}
+		}
+	}
+	return handlers
+}
+
 // extraConfigFiles holds paths from -f flags for CLI-level file layering.
 var extraConfigFiles []string
 
@@ -499,15 +542,17 @@ func doStart(args []string, controllerMode bool, stdout, stderr io.Writer) int {
 	tomlPath := filepath.Join(cityPath, "city.toml")
 	if controllerMode {
 		poolSessions := computePoolSessions(cfg, cityName)
+		poolDeathHandlers := computePoolDeathHandlers(cfg, cityName, cityPath)
 		watchDirs := config.WatchDirs(prov, cfg, cityPath)
 		return runController(cityPath, tomlPath, cfg, buildAgents, sp,
-			newDrainOps(sp), poolSessions, watchDirs, recorder, eventProv, stdout, stderr)
+			newDrainOps(sp), poolSessions, poolDeathHandlers, watchDirs, recorder, eventProv, stdout, stderr)
 	}
 
 	// One-shot reconciliation (default): no drain (kill is fine).
 	// Create a signal-aware context so Ctrl-C cancels in-flight starts.
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	runPoolOnBoot(cfg, cityPath, shellScaleCheck, stderr)
 	agents := buildAgents(cfg, sp)
 	rops := newReconcileOps(sp)
 	suspendedNames := computeSuspendedNames(cfg, cityName, cityPath)

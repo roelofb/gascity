@@ -383,7 +383,7 @@ func TestControllerSocketPing(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
 	go func() {
-		done <- runController(dir, "", cfg, buildFn, sp, nil, nil, nil, events.Discard, nil, &stdout, &stderr)
+		done <- runController(dir, "", cfg, buildFn, sp, nil, nil, nil, nil, events.Discard, nil, &stdout, &stderr)
 	}()
 
 	// Wait for controller socket to become responsive.

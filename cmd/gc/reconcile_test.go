@@ -2135,3 +2135,95 @@ func TestFormatElapsed(t *testing.T) {
 		}
 	}
 }
+
+func TestPoolDeathDetection(t *testing.T) {
+	// Simulate two ticks: tick1 has dog-3 running, tick2 dog-3 is gone.
+	// on_death should fire for dog-3 only.
+	var deathCmds []string
+	handlers := map[string]poolDeathInfo{
+		"gc-test-dog-1": {Command: "unclaim dog-1", Dir: "/tmp"},
+		"gc-test-dog-2": {Command: "unclaim dog-2", Dir: "/tmp"},
+		"gc-test-dog-3": {Command: "unclaim dog-3", Dir: "/tmp"},
+	}
+
+	// Simulate prevPoolRunning from tick1: dog-2, dog-3 running.
+	prevPoolRunning := map[string]bool{
+		"gc-test-dog-2": true,
+		"gc-test-dog-3": true,
+	}
+
+	// Tick2 state: dog-2 still running, dog-3 gone.
+	currentRunning := []string{"gc-test-dog-1", "gc-test-dog-2"}
+	currentSet := make(map[string]bool, len(currentRunning))
+	for _, name := range currentRunning {
+		currentSet[name] = true
+	}
+
+	// Detect deaths.
+	for sn, info := range handlers {
+		if prevPoolRunning[sn] && !currentSet[sn] {
+			deathCmds = append(deathCmds, info.Command)
+		}
+	}
+
+	if len(deathCmds) != 1 {
+		t.Fatalf("len(deathCmds) = %d, want 1", len(deathCmds))
+	}
+	if deathCmds[0] != "unclaim dog-3" {
+		t.Errorf("deathCmds[0] = %q, want %q", deathCmds[0], "unclaim dog-3")
+	}
+}
+
+func TestPoolDeathFirstTickSkipped(t *testing.T) {
+	// First tick: prevPoolRunning is nil → no on_death should fire.
+	handlers := map[string]poolDeathInfo{
+		"gc-test-dog-1": {Command: "unclaim dog-1", Dir: "/tmp"},
+	}
+	var prevPoolRunning map[string]bool // nil on first tick
+
+	currentRunning := []string{} // everything is dead
+	currentSet := make(map[string]bool, len(currentRunning))
+	for _, name := range currentRunning {
+		currentSet[name] = true
+	}
+
+	var deathCmds []string
+	if prevPoolRunning != nil {
+		for sn, info := range handlers {
+			if prevPoolRunning[sn] && !currentSet[sn] {
+				deathCmds = append(deathCmds, info.Command)
+			}
+		}
+	}
+
+	if len(deathCmds) != 0 {
+		t.Errorf("first tick should not fire on_death, got %v", deathCmds)
+	}
+}
+
+func TestPoolDeathNonPoolIgnored(t *testing.T) {
+	// Non-pool session dies — should not trigger on_death.
+	handlers := map[string]poolDeathInfo{
+		"gc-test-dog-1": {Command: "unclaim dog-1", Dir: "/tmp"},
+	}
+	prevPoolRunning := map[string]bool{
+		"gc-test-dog-1": true,
+	}
+	// mayor dies — not in handlers, so no on_death.
+	currentRunning := []string{"gc-test-dog-1"} // mayor was running but not tracked
+	currentSet := make(map[string]bool, len(currentRunning))
+	for _, name := range currentRunning {
+		currentSet[name] = true
+	}
+
+	var deathCmds []string
+	for sn, info := range handlers {
+		if prevPoolRunning[sn] && !currentSet[sn] {
+			deathCmds = append(deathCmds, info.Command)
+		}
+	}
+
+	if len(deathCmds) != 0 {
+		t.Errorf("non-pool death should not fire on_death, got %v", deathCmds)
+	}
+}

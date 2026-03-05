@@ -888,6 +888,14 @@
           "type": "string",
           "description": "DrainTimeout is the maximum time to wait for a pool instance to finish its\ncurrent work before force-killing it. Duration string (e.g., \"5m\", \"30m\", \"1h\").\nDefaults to \"5m\".",
           "default": "5m"
+        },
+        "on_death": {
+          "type": "string",
+          "description": "OnDeath is a shell command run when a pool instance dies.\nDefault: unclaims in_progress beads assigned to the dead instance."
+        },
+        "on_boot": {
+          "type": "string",
+          "description": "OnBoot is a shell command run once at controller startup for each pool.\nDefault: unclaims all in_progress beads labeled for this pool."
         }
       },
       "additionalProperties": false,
@@ -913,6 +921,14 @@
         "drain_timeout": {
           "type": "string",
           "description": "DrainTimeout overrides the drain timeout. Duration string (e.g., \"5m\", \"30m\", \"1h\")."
+        },
+        "on_death": {
+          "type": "string",
+          "description": "OnDeath overrides the on_death command."
+        },
+        "on_boot": {
+          "type": "string",
+          "description": "OnBoot overrides the on_boot command."
         }
       },
       "additionalProperties": false,

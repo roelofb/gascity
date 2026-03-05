@@ -300,6 +300,7 @@ func controllerLoop(
 	ad automationDispatcher,
 	rec events.Recorder,
 	poolSessions map[string]time.Duration,
+	poolDeathHandlers map[string]poolDeathInfo,
 	suspendedNames map[string]bool,
 	cs *controllerState, // nil when API disabled
 	stdout, stderr io.Writer,
@@ -336,9 +337,36 @@ func controllerLoop(
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Track pool instance liveness for death detection.
+	// nil on first tick — on_boot already handled startup orphans.
+	var prevPoolRunning map[string]bool
+
 	for {
 		select {
 		case <-ticker.C:
+			// Detect pool instance deaths since last tick.
+			if len(poolDeathHandlers) > 0 {
+				currentRunning, _ := rops.listRunning("")
+				currentSet := make(map[string]bool, len(currentRunning))
+				for _, name := range currentRunning {
+					currentSet[name] = true
+				}
+				if prevPoolRunning != nil {
+					for sn, info := range poolDeathHandlers {
+						if prevPoolRunning[sn] && !currentSet[sn] {
+							if _, err := shellScaleCheck(info.Command, info.Dir); err != nil {
+								fmt.Fprintf(stderr, "on_death %s: %v\n", sn, err) //nolint:errcheck // best-effort stderr
+							}
+						}
+					}
+				}
+				prevPoolRunning = make(map[string]bool)
+				for sn := range poolDeathHandlers {
+					if currentSet[sn] {
+						prevPoolRunning[sn] = true
+					}
+				}
+			}
 			if dirty.Swap(false) {
 				result, err := tryReloadConfig(tomlPath, cityName, cityRoot, stderr)
 				if err != nil {
@@ -409,6 +437,7 @@ func controllerLoop(
 						}
 					}
 					poolSessions = computePoolSessions(cfg, cityName)
+					poolDeathHandlers = computePoolDeathHandlers(cfg, cityName, cityRoot)
 					suspendedNames = computeSuspendedNames(cfg, cityName, cityRoot)
 					// Rebuild crash tracker only if config values changed.
 					newMaxR := cfg.Daemon.MaxRestartsOrDefault()
@@ -512,6 +541,7 @@ func runController(
 	sp session.Provider,
 	dops drainOps,
 	poolSessions map[string]time.Duration,
+	poolDeathHandlers map[string]poolDeathInfo,
 	initialWatchDirs []string,
 	rec events.Recorder,
 	eventProv events.Provider,
@@ -607,9 +637,10 @@ func runController(
 	ad := buildAutomationDispatcher(cityPath, cfg, beads.ExecCommandRunner(), rec, stderr)
 
 	suspendedNames := computeSuspendedNames(cfg, cityName, cityPath)
+	runPoolOnBoot(cfg, cityPath, shellScaleCheck, stderr)
 	controllerLoop(ctx, cfg.Daemon.PatrolIntervalDuration(),
 		cfg, cityName, tomlPath, initialWatchDirs,
-		buildFn, sp, rops, dops, ct, it, wg, ad, rec, poolSessions, suspendedNames, cs, stdout, stderr)
+		buildFn, sp, rops, dops, ct, it, wg, ad, rec, poolSessions, poolDeathHandlers, suspendedNames, cs, stdout, stderr)
 
 	// Shutdown: graceful stop all sessions on this city's socket.
 	timeout := cfg.Daemon.ShutdownTimeoutDuration()

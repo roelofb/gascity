@@ -2972,3 +2972,124 @@ name = "a"
 		t.Errorf("BindOrDefault() = %q, want %q", cfg.API.BindOrDefault(), "127.0.0.1")
 	}
 }
+
+func TestPoolConfigOnDeathOnBootRoundTrip(t *testing.T) {
+	const toml = `
+[workspace]
+name = "test"
+
+[[agents]]
+name = "dog"
+
+[agents.pool]
+min = 0
+max = 5
+on_death = "echo dead"
+on_boot = "echo booted"
+`
+	cfg, err := Parse([]byte(toml))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Agents) != 1 {
+		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
+	}
+	pool := cfg.Agents[0].Pool
+	if pool == nil {
+		t.Fatal("Pool is nil")
+	}
+	if pool.OnDeath != "echo dead" {
+		t.Errorf("OnDeath = %q, want %q", pool.OnDeath, "echo dead")
+	}
+	if pool.OnBoot != "echo booted" {
+		t.Errorf("OnBoot = %q, want %q", pool.OnBoot, "echo booted")
+	}
+}
+
+func TestEffectiveOnDeathDefault(t *testing.T) {
+	a := Agent{
+		Name: "dog",
+		Dir:  "myrig",
+		Pool: &PoolConfig{Min: 0, Max: 5},
+	}
+	cmd := a.EffectiveOnDeath()
+	if !strings.Contains(cmd, "--assignee=myrig/dog") {
+		t.Errorf("EffectiveOnDeath() = %q, want --assignee=myrig/dog", cmd)
+	}
+	if !strings.Contains(cmd, "--status=in_progress") {
+		t.Errorf("EffectiveOnDeath() = %q, want --status=in_progress", cmd)
+	}
+	if !strings.Contains(cmd, "--unclaim") {
+		t.Errorf("EffectiveOnDeath() = %q, want --unclaim", cmd)
+	}
+}
+
+func TestEffectiveOnDeathCustom(t *testing.T) {
+	a := Agent{
+		Name: "dog",
+		Pool: &PoolConfig{Min: 0, Max: 5, OnDeath: "custom-death-cmd"},
+	}
+	cmd := a.EffectiveOnDeath()
+	if cmd != "custom-death-cmd" {
+		t.Errorf("EffectiveOnDeath() = %q, want %q", cmd, "custom-death-cmd")
+	}
+}
+
+func TestEffectiveOnDeathNonPool(t *testing.T) {
+	a := Agent{Name: "mayor"}
+	cmd := a.EffectiveOnDeath()
+	if cmd != "" {
+		t.Errorf("EffectiveOnDeath() = %q, want empty for non-pool agent", cmd)
+	}
+}
+
+func TestEffectiveOnBootDefault(t *testing.T) {
+	a := Agent{
+		Name: "dog",
+		Dir:  "myrig",
+		Pool: &PoolConfig{Min: 0, Max: 5},
+	}
+	cmd := a.EffectiveOnBoot()
+	if !strings.Contains(cmd, "--label=pool:myrig/dog") {
+		t.Errorf("EffectiveOnBoot() = %q, want --label=pool:myrig/dog", cmd)
+	}
+	if !strings.Contains(cmd, "--status=in_progress") {
+		t.Errorf("EffectiveOnBoot() = %q, want --status=in_progress", cmd)
+	}
+	if !strings.Contains(cmd, "--unclaim") {
+		t.Errorf("EffectiveOnBoot() = %q, want --unclaim", cmd)
+	}
+}
+
+func TestEffectiveOnBootDefaultPoolName(t *testing.T) {
+	// Pool instance uses PoolName for label (template name, not instance name).
+	a := Agent{
+		Name:     "dog-3",
+		Dir:      "myrig",
+		Pool:     &PoolConfig{Min: 0, Max: 5},
+		PoolName: "myrig/dog",
+	}
+	cmd := a.EffectiveOnBoot()
+	if !strings.Contains(cmd, "--label=pool:myrig/dog") {
+		t.Errorf("EffectiveOnBoot() = %q, want --label=pool:myrig/dog (from PoolName)", cmd)
+	}
+}
+
+func TestEffectiveOnBootCustom(t *testing.T) {
+	a := Agent{
+		Name: "dog",
+		Pool: &PoolConfig{Min: 0, Max: 5, OnBoot: "custom-boot-cmd"},
+	}
+	cmd := a.EffectiveOnBoot()
+	if cmd != "custom-boot-cmd" {
+		t.Errorf("EffectiveOnBoot() = %q, want %q", cmd, "custom-boot-cmd")
+	}
+}
+
+func TestEffectiveOnBootNonPool(t *testing.T) {
+	a := Agent{Name: "mayor"}
+	cmd := a.EffectiveOnBoot()
+	if cmd != "" {
+		t.Errorf("EffectiveOnBoot() = %q, want empty for non-pool agent", cmd)
+	}
+}

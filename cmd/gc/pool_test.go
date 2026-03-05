@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/julianknutsen/gascity/internal/config"
@@ -635,6 +637,96 @@ func TestPoolInstanceWorkQueryUsesTemplateName(t *testing.T) {
 	if got != want {
 		t.Errorf("pool instance EffectiveWorkQuery() = %q, want %q", got, want)
 	}
+}
+
+func TestRunPoolOnBoot(t *testing.T) {
+	var ran []string
+	runner := func(cmd, _ string) (string, error) {
+		ran = append(ran, cmd)
+		return "", nil
+	}
+
+	cfg := &config.City{
+		Agents: []config.Agent{
+			{Name: "mayor"},
+			{Name: "dog", Pool: &config.PoolConfig{Min: 0, Max: 3}},
+			{Name: "cat", Pool: &config.PoolConfig{Min: 0, Max: 2}},
+		},
+	}
+
+	var stderr bytes.Buffer
+	runPoolOnBoot(cfg, t.TempDir(), runner, &stderr)
+
+	if len(ran) != 2 {
+		t.Fatalf("ran %d commands, want 2 (one per pool agent)", len(ran))
+	}
+	// Both should contain unclaim logic.
+	for i, cmd := range ran {
+		if !strings.Contains(cmd, "--unclaim") {
+			t.Errorf("ran[%d] = %q, want --unclaim", i, cmd)
+		}
+	}
+}
+
+func TestRunPoolOnBootError(t *testing.T) {
+	runner := func(_, _ string) (string, error) {
+		return "", fmt.Errorf("bd not found")
+	}
+
+	cfg := &config.City{
+		Agents: []config.Agent{
+			{Name: "dog", Pool: &config.PoolConfig{Min: 0, Max: 3}},
+		},
+	}
+
+	var stderr bytes.Buffer
+	runPoolOnBoot(cfg, t.TempDir(), runner, &stderr)
+
+	// Error should be logged, not fatal.
+	if !strings.Contains(stderr.String(), "on_boot dog") {
+		t.Errorf("stderr = %q, want on_boot error logged", stderr.String())
+	}
+}
+
+func TestComputePoolDeathHandlers(t *testing.T) {
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test"},
+		Agents: []config.Agent{
+			{Name: "mayor"}, // not a pool
+			{Name: "dog", Pool: &config.PoolConfig{Min: 0, Max: 3}},
+			{Name: "cat", Pool: &config.PoolConfig{Min: 0, Max: 1}}, // max=1, skipped
+		},
+	}
+
+	handlers := computePoolDeathHandlers(cfg, "test", t.TempDir())
+
+	// dog has max=3, so 3 handlers (dog-1, dog-2, dog-3).
+	// cat has max=1, skipped. mayor is not a pool.
+	if len(handlers) != 3 {
+		t.Fatalf("len(handlers) = %d, want 3", len(handlers))
+	}
+
+	// Default session template is empty → session name = sanitized agent name.
+	for i := 1; i <= 3; i++ {
+		sn := fmt.Sprintf("dog-%d", i)
+		info, ok := handlers[sn]
+		if !ok {
+			t.Errorf("missing handler for %s (have keys: %v)", sn, handlerKeys(handlers))
+			continue
+		}
+		want := fmt.Sprintf("--assignee=dog-%d", i)
+		if !strings.Contains(info.Command, want) {
+			t.Errorf("handler[%s].Command = %q, want %s", sn, info.Command, want)
+		}
+	}
+}
+
+func handlerKeys(m map[string]poolDeathInfo) []string {
+	var keys []string
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // fakeLookPath always succeeds — tests don't need real binaries.

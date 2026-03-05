@@ -798,6 +798,12 @@ type PoolConfig struct {
 	// current work before force-killing it. Duration string (e.g., "5m", "30m", "1h").
 	// Defaults to "5m".
 	DrainTimeout string `toml:"drain_timeout,omitempty" jsonschema:"default=5m"`
+	// OnDeath is a shell command run when a pool instance dies.
+	// Default: unclaims in_progress beads assigned to the dead instance.
+	OnDeath string `toml:"on_death,omitempty"`
+	// OnBoot is a shell command run once at controller startup for each pool.
+	// Default: unclaims all in_progress beads labeled for this pool.
+	OnBoot string `toml:"on_boot,omitempty"`
 }
 
 // DrainTimeoutDuration returns the drain timeout as a time.Duration.
@@ -1023,6 +1029,50 @@ func (a *Agent) defaultPoolCheck() string {
 // IsPool reports whether this agent has explicit pool configuration.
 func (a *Agent) IsPool() bool {
 	return a.Pool != nil
+}
+
+// EffectiveOnDeath returns the on_death command for this pool agent.
+// Default: unclaims in_progress beads assigned to this agent.
+func (a *Agent) EffectiveOnDeath() string {
+	pool := a.EffectivePool()
+	if pool.OnDeath != "" {
+		return pool.OnDeath
+	}
+	if !a.IsPool() {
+		return ""
+	}
+	return a.defaultOnDeath()
+}
+
+func (a *Agent) defaultOnDeath() string {
+	return `bd list --assignee=` + a.QualifiedName() +
+		` --status=in_progress --json 2>/dev/null | ` +
+		`jq -r '.[].id' 2>/dev/null | ` +
+		`xargs -rI{} bd update {} --unclaim 2>/dev/null`
+}
+
+// EffectiveOnBoot returns the on_boot command for this pool agent.
+// Default: unclaims all in_progress beads labeled for this pool.
+func (a *Agent) EffectiveOnBoot() string {
+	pool := a.EffectivePool()
+	if pool.OnBoot != "" {
+		return pool.OnBoot
+	}
+	if !a.IsPool() {
+		return ""
+	}
+	return a.defaultOnBoot()
+}
+
+func (a *Agent) defaultOnBoot() string {
+	label := a.QualifiedName()
+	if a.PoolName != "" {
+		label = a.PoolName
+	}
+	return `bd list --label=pool:` + label +
+		` --status=in_progress --json 2>/dev/null | ` +
+		`jq -r '.[].id' 2>/dev/null | ` +
+		`xargs -rI{} bd update {} --unclaim 2>/dev/null`
 }
 
 // ValidateAgents checks agent configurations for errors. It returns an error

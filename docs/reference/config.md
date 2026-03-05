@@ -270,6 +270,8 @@ PoolConfig defines elastic pool parameters for an agent.
 | `max` | integer |  | `0` | Max is the maximum number of pool instances. 0 means the pool is disabled (no instances will be created). Defaults to 0. |
 | `check` | string |  | `echo 1` | Check is a shell command whose output determines desired pool size. Defaults to "echo 1". |
 | `drain_timeout` | string |  | `5m` | DrainTimeout is the maximum time to wait for a pool instance to finish its current work before force-killing it. Duration string (e.g., "5m", "30m", "1h"). Defaults to "5m". |
+| `on_death` | string |  |  | OnDeath is a shell command run when a pool instance dies. Default: unclaims in_progress beads assigned to the dead instance. |
+| `on_boot` | string |  |  | OnBoot is a shell command run once at controller startup for each pool. Default: unclaims all in_progress beads labeled for this pool. |
 
 ## PoolOverride
 
@@ -281,6 +283,8 @@ PoolOverride modifies pool configuration fields.
 | `max` | integer |  |  | Max overrides pool maximum instances. 0 means the pool is disabled. |
 | `check` | string |  |  | Check overrides the pool check command. |
 | `drain_timeout` | string |  |  | DrainTimeout overrides the drain timeout. Duration string (e.g., "5m", "30m", "1h"). |
+| `on_death` | string |  |  | OnDeath overrides the on_death command. |
+| `on_boot` | string |  |  | OnBoot overrides the on_boot command. |
 
 ## ProviderPatch
 

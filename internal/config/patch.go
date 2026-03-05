@@ -89,6 +89,10 @@ type PoolOverride struct {
 	Check *string `toml:"check,omitempty"`
 	// DrainTimeout overrides the drain timeout. Duration string (e.g., "5m", "30m", "1h").
 	DrainTimeout *string `toml:"drain_timeout,omitempty"`
+	// OnDeath overrides the on_death command.
+	OnDeath *string `toml:"on_death,omitempty"`
+	// OnBoot overrides the on_boot command.
+	OnBoot *string `toml:"on_boot,omitempty"`
 }
 
 // RigPatch modifies an existing rig identified by Name.
@@ -272,6 +276,12 @@ func applyPoolOverride(a *Agent, po *PoolOverride) {
 	}
 	if po.DrainTimeout != nil {
 		a.Pool.DrainTimeout = *po.DrainTimeout
+	}
+	if po.OnDeath != nil {
+		a.Pool.OnDeath = *po.OnDeath
+	}
+	if po.OnBoot != nil {
+		a.Pool.OnBoot = *po.OnBoot
 	}
 }
 
