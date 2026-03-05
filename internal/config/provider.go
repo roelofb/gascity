@@ -26,6 +26,12 @@ type ProviderSpec struct {
 	EmitsPermissionWarning bool `toml:"emits_permission_warning,omitempty"`
 	// Env sets additional environment variables for the provider process.
 	Env map[string]string `toml:"env,omitempty"`
+	// PathCheck overrides the binary name used for PATH detection.
+	// When set, lookupProvider and detectProviderName use this instead
+	// of Command for exec.LookPath checks. Useful when Command is a
+	// shell wrapper (e.g. sh -c '...') but we need to verify the real
+	// binary is installed.
+	PathCheck string `toml:"path_check,omitempty"`
 }
 
 // ResolvedProvider is the fully-merged, ready-to-use provider config.
@@ -49,6 +55,15 @@ func (rp *ResolvedProvider) CommandString() string {
 		return rp.Command
 	}
 	return rp.Command + " " + strings.Join(rp.Args, " ")
+}
+
+// pathCheckBinary returns the binary name to use for PATH detection.
+// If PathCheck is set, it is used; otherwise Command is used directly.
+func (ps *ProviderSpec) pathCheckBinary() string {
+	if ps.PathCheck != "" {
+		return ps.PathCheck
+	}
+	return ps.Command
 }
 
 // builtinProviderOrder is the priority order for provider detection and
@@ -75,8 +90,8 @@ func BuiltinProviders() map[string]ProviderSpec {
 	return map[string]ProviderSpec{
 		"claude": {
 			DisplayName:            "Claude Code",
-			Command:                "claude",
-			Args:                   []string{"--dangerously-skip-permissions"},
+			Command:                `sh -c 'EXTRA=""; if command -v bd >/dev/null 2>&1 && [ -n "$GC_AGENT" ]; then WD=$(bd list --json --assignee="$GC_AGENT" --status=in-progress 2>/dev/null | jq -r ".[0].metadata.worktree_dir // empty" 2>/dev/null); [ -n "$WD" ] && [ -d "$WD" ] && EXTRA="--cwd $WD --continue"; fi; exec claude --dangerously-skip-permissions $EXTRA "$@"' --`,
+			PathCheck:              "claude",
 			PromptMode:             "arg",
 			ReadyDelayMs:           10000,
 			ReadyPromptPrefix:      "\u276f ", // ❯

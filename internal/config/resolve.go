@@ -81,8 +81,8 @@ func lookupProvider(name string, cityProviders map[string]ProviderSpec, lookPath
 	if cityProviders != nil {
 		if spec, ok := cityProviders[name]; ok {
 			if spec.Command != "" {
-				if _, err := lookPath(spec.Command); err != nil {
-					return nil, fmt.Errorf("provider %q: command %q not found in PATH", name, spec.Command)
+				if _, err := lookPath(spec.pathCheckBinary()); err != nil {
+					return nil, fmt.Errorf("provider %q: command %q not found in PATH", name, spec.pathCheckBinary())
 				}
 			}
 			return &spec, nil
@@ -92,7 +92,7 @@ func lookupProvider(name string, cityProviders map[string]ProviderSpec, lookPath
 	// Fall back to built-in presets.
 	builtins := BuiltinProviders()
 	if spec, ok := builtins[name]; ok {
-		if _, err := lookPath(spec.Command); err != nil {
+		if _, err := lookPath(spec.pathCheckBinary()); err != nil {
 			return nil, fmt.Errorf("provider %q not found in PATH", name)
 		}
 		return &spec, nil
@@ -107,7 +107,8 @@ func detectProviderName(lookPath LookPathFunc) (string, error) {
 	builtins := BuiltinProviders()
 	order := BuiltinProviderOrder()
 	for _, name := range order {
-		if _, err := lookPath(builtins[name].Command); err == nil {
+		spec := builtins[name]
+		if _, err := lookPath(spec.pathCheckBinary()); err == nil {
 			return name, nil
 		}
 	}

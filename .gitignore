@@ -6,3 +6,7 @@ coverage.txt
 *.test
 .claude/
 .gc/
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db

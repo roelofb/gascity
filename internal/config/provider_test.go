@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -48,11 +49,17 @@ func TestBuiltinProviders(t *testing.T) {
 
 func TestBuiltinProvidersClaude(t *testing.T) {
 	p := BuiltinProviders()["claude"]
-	if p.Command != "claude" {
-		t.Errorf("Command = %q, want %q", p.Command, "claude")
+	if !strings.Contains(p.Command, "claude --dangerously-skip-permissions") {
+		t.Errorf("Command should contain claude --dangerously-skip-permissions, got %q", p.Command)
 	}
-	if len(p.Args) != 1 || p.Args[0] != "--dangerously-skip-permissions" {
-		t.Errorf("Args = %v, want [--dangerously-skip-permissions]", p.Args)
+	if !strings.Contains(p.Command, "sh -c") {
+		t.Errorf("Command should be a sh -c wrapper, got %q", p.Command)
+	}
+	if !strings.Contains(p.Command, "bd list") {
+		t.Errorf("Command should contain bd list preamble, got %q", p.Command)
+	}
+	if len(p.Args) != 0 {
+		t.Errorf("Args = %v, want empty (args baked into sh -c wrapper)", p.Args)
 	}
 	if p.PromptMode != "arg" {
 		t.Errorf("PromptMode = %q, want %q", p.PromptMode, "arg")
@@ -62,6 +69,23 @@ func TestBuiltinProvidersClaude(t *testing.T) {
 	}
 	if !p.EmitsPermissionWarning {
 		t.Error("EmitsPermissionWarning = false, want true")
+	}
+}
+
+func TestBuiltinClaudeCommandString(t *testing.T) {
+	p := BuiltinProviders()["claude"]
+	rp := &ResolvedProvider{
+		Command: p.Command,
+		Args:    p.Args,
+	}
+	cs := rp.CommandString()
+	// With no args, CommandString should just return the command.
+	if cs != p.Command {
+		t.Errorf("CommandString() = %q, want %q", cs, p.Command)
+	}
+	// The wrapper should end with ' -- so prompt passthrough works.
+	if !strings.HasSuffix(cs, "' --") {
+		t.Errorf("CommandString() should end with \"' --\" for prompt passthrough, got %q", cs)
 	}
 }
 

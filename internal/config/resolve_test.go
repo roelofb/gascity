@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -53,12 +54,12 @@ func TestResolveProviderAgentProvider(t *testing.T) {
 	if rp.Name != "claude" {
 		t.Errorf("Name = %q, want %q", rp.Name, "claude")
 	}
-	if rp.Command != "claude" {
-		t.Errorf("Command = %q, want %q", rp.Command, "claude")
+	if !strings.Contains(rp.Command, "claude --dangerously-skip-permissions") {
+		t.Errorf("Command should contain claude --dangerously-skip-permissions, got %q", rp.Command)
 	}
-	want := "claude --dangerously-skip-permissions"
-	if got := rp.CommandString(); got != want {
-		t.Errorf("CommandString() = %q, want %q", got, want)
+	cs := rp.CommandString()
+	if !strings.Contains(cs, "claude --dangerously-skip-permissions") {
+		t.Errorf("CommandString() should contain claude --dangerously-skip-permissions, got %q", cs)
 	}
 }
 
@@ -211,9 +212,9 @@ func TestResolveProviderAgentArgsOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveProvider: %v", err)
 	}
-	want := "claude --dangerously-skip-permissions --verbose"
-	if got := rp.CommandString(); got != want {
-		t.Errorf("CommandString() = %q, want %q", got, want)
+	// Agent-level args override replaces provider args entirely.
+	if len(rp.Args) != 2 || rp.Args[1] != "--verbose" {
+		t.Errorf("Args = %v, want [--dangerously-skip-permissions --verbose]", rp.Args)
 	}
 }
 
@@ -359,8 +360,8 @@ func TestLookupProviderBuiltin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookupProvider: %v", err)
 	}
-	if spec.Command != "claude" {
-		t.Errorf("Command = %q, want %q", spec.Command, "claude")
+	if !strings.Contains(spec.Command, "claude --dangerously-skip-permissions") {
+		t.Errorf("Command should contain claude --dangerously-skip-permissions, got %q", spec.Command)
 	}
 }
 

@@ -208,6 +208,36 @@ func TestBuildOneAgentCustomSessionTemplate(t *testing.T) {
 	}
 }
 
+func TestBuildOneAgentClaudeProviderCommand(t *testing.T) {
+	sp := session.NewFake()
+	p := testBuildParams(sp)
+	cfgAgent := &config.Agent{
+		Name:     "polecat",
+		Provider: "claude",
+	}
+
+	a, err := buildOneAgent(p, cfgAgent, "wasteland/polecat", nil)
+	if err != nil {
+		t.Fatalf("buildOneAgent: %v", err)
+	}
+
+	cfg := a.SessionConfig()
+	// The command should contain the sh -c wrapper with bd preamble.
+	if !strings.Contains(cfg.Command, "sh -c") {
+		t.Errorf("command should contain sh -c wrapper, got %q", cfg.Command)
+	}
+	if !strings.Contains(cfg.Command, "bd list") {
+		t.Errorf("command should contain bd list preamble, got %q", cfg.Command)
+	}
+	if !strings.Contains(cfg.Command, "claude --dangerously-skip-permissions") {
+		t.Errorf("command should contain claude --dangerously-skip-permissions, got %q", cfg.Command)
+	}
+	// GC_AGENT should be set for the preamble to use.
+	if cfg.Env["GC_AGENT"] != "wasteland/polecat" {
+		t.Errorf("GC_AGENT = %q, want %q", cfg.Env["GC_AGENT"], "wasteland/polecat")
+	}
+}
+
 func TestNewAgentBuildParams(t *testing.T) {
 	sp := session.NewFake()
 	cfg := &config.City{

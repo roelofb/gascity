@@ -1053,6 +1053,10 @@
           },
           "type": "object",
           "description": "Env sets additional environment variables for the provider process."
+        },
+        "path_check": {
+          "type": "string",
+          "description": "PathCheck overrides the binary name used for PATH detection.\nWhen set, lookupProvider and detectProviderName use this instead\nof Command for exec.LookPath checks. Useful when Command is a\nshell wrapper (e.g. sh -c '...') but we need to verify the real\nbinary is installed."
         }
       },
       "additionalProperties": false,

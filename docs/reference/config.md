@@ -318,6 +318,7 @@ ProviderSpec defines a named provider's startup parameters.
 | `process_names` | []string |  |  | ProcessNames lists process names to look for when checking if the provider is running. |
 | `emits_permission_warning` | boolean |  |  | EmitsPermissionWarning indicates whether the provider emits permission prompts. |
 | `env` | map[string]string |  |  | Env sets additional environment variables for the provider process. |
+| `path_check` | string |  |  | PathCheck overrides the binary name used for PATH detection. When set, lookupProvider and detectProviderName use this instead of Command for exec.LookPath checks. Useful when Command is a shell wrapper (e.g. sh -c '...') but we need to verify the real binary is installed. |
 
 ## Rig
 
