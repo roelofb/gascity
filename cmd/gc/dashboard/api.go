@@ -1740,20 +1740,32 @@ func (h *APIHandler) handleSSEProxy(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "event: connected\ndata: ok\n\n") //nolint:errcheck // best-effort SSE write
 	flusher.Flush()
 
-	// Proxy the upstream SSE stream using line-based parsing.
-	// The API server emits: "event: <type>\nid: <seq>\ndata: <json>\n\n"
-	// The dashboard client expects: "event: dashboard-update\ndata: event\n\n"
+	// Proxy the upstream SSE stream, preserving event types and IDs.
+	// Upstream format: "event: <type>\nid: <seq>\ndata: <json>\n\n"
+	// We forward: "event: gc-event\nid: <seq>\ndata: <json>\n\n"
+	// The browser parses the event type from the JSON data payload and
+	// uses Last-Event-ID for automatic reconnection on disconnect.
 	scanner := bufio.NewScanner(resp.Body)
+	var currentID string
 	for scanner.Scan() {
 		line := scanner.Text()
-		// A "data:" line means a complete event is being sent. Emit a
-		// dashboard-update event for each upstream data line. This
-		// triggers the browser's EventSource handler to re-render.
-		if strings.HasPrefix(line, "data:") {
-			fmt.Fprintf(w, "event: dashboard-update\ndata: event\n\n") //nolint:errcheck // best-effort SSE write
+		switch {
+		case strings.HasPrefix(line, "id:"):
+			currentID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
+		case strings.HasPrefix(line, "data:"):
+			data := strings.TrimPrefix(line, "data:")
+			if currentID != "" {
+				fmt.Fprintf(w, "event: gc-event\nid: %s\ndata:%s\n\n", currentID, data) //nolint:errcheck // best-effort SSE write
+			} else {
+				fmt.Fprintf(w, "event: gc-event\ndata:%s\n\n", data) //nolint:errcheck // best-effort SSE write
+			}
+			flusher.Flush()
+			currentID = ""
+		case strings.HasPrefix(line, ":"):
+			// Forward keepalive comments to prevent connection timeout.
+			fmt.Fprintf(w, ": keepalive\n\n") //nolint:errcheck // best-effort SSE write
 			flusher.Flush()
 		}
-		// Comments (keepalives) and other lines are silently consumed.
 	}
 }
 

@@ -25,6 +25,67 @@
     var sseReconnectDelay = 1000;
     var sseMaxReconnectDelay = 30000;
 
+    // Category-based refresh: observation events update only the activity
+    // panel (cheap, 1 API call). State-changing events trigger a full-page
+    // morph (13 API calls) but are debounced to prevent overload.
+
+    // High-frequency observation events — activity panel only.
+    var _observationTypes = {
+        'agent.message': 1, 'agent.tool_call': 1, 'agent.tool_result': 1,
+        'agent.thinking': 1, 'agent.output': 1, 'agent.idle': 1,
+        'agent.error': 1, 'agent.completed': 1
+    };
+
+    // Activity panel: throttled (first event starts timer, subsequent
+    // events within the window are coalesced).
+    var _activityTimer = null;
+    var _activityThrottle = 2000;
+
+    function _scheduleActivityRefresh() {
+        if (_activityTimer) return; // Already scheduled
+        _activityTimer = setTimeout(function() {
+            _activityTimer = null;
+            if (window.pauseRefresh) return;
+            var panel = document.getElementById('activity-panel');
+            if (panel && typeof htmx !== 'undefined') {
+                htmx.trigger(panel, 'panel-refresh');
+            }
+        }, _activityThrottle);
+    }
+
+    // Full page: debounced (resets on each new event, fires after quiet period).
+    var _fullRefreshTimer = null;
+
+    function _scheduleFullRefresh() {
+        if (_fullRefreshTimer) clearTimeout(_fullRefreshTimer);
+        _fullRefreshTimer = setTimeout(function() {
+            _fullRefreshTimer = null;
+            // Cancel pending activity refresh — full refresh includes it.
+            if (_activityTimer) { clearTimeout(_activityTimer); _activityTimer = null; }
+            if (window.pauseRefresh) return;
+            var dashboard = document.getElementById('dashboard-main');
+            if (dashboard && typeof htmx !== 'undefined') {
+                htmx.trigger(dashboard, 'sse:dashboard-update');
+            }
+        }, 500);
+    }
+
+    function _handleSSEEvent(e) {
+        if (window.pauseRefresh) return;
+        var eventType = '';
+        try {
+            var data = JSON.parse(e.data);
+            eventType = data.type || '';
+        } catch(err) { /* unparseable — treat as state change */ }
+
+        // All events update the activity panel.
+        _scheduleActivityRefresh();
+
+        // Only state-changing events trigger full-page refresh.
+        if (eventType && _observationTypes[eventType]) return;
+        _scheduleFullRefresh();
+    }
+
     function connectSSE() {
         if (evtSource) {
             evtSource.close();
@@ -38,14 +99,11 @@
             updateConnectionStatus('live');
         });
 
-        evtSource.addEventListener('dashboard-update', function(e) {
-            if (window.pauseRefresh) return;
-            // Trigger HTMX to re-fetch the dashboard
-            var dashboard = document.getElementById('dashboard-main');
-            if (dashboard && typeof htmx !== 'undefined') {
-                htmx.trigger(dashboard, 'sse:dashboard-update');
-            }
-        });
+        // Typed event stream: the proxy forwards each upstream event as
+        // "gc-event" with the full JSON payload (including type field).
+        // Events are routed by category: observation events refresh only
+        // the activity panel; state changes trigger full-page morph.
+        evtSource.addEventListener('gc-event', _handleSSEEvent);
 
         evtSource.onerror = function() {
             window.sseConnected = false;

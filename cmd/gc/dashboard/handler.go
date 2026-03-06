@@ -235,6 +235,31 @@ func (h *ConvoyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ServeActivityPanel handles GET /panels/activity for targeted panel refresh.
+// Only fetches activity data (1 API call instead of 13), renders just the
+// activity panel HTML fragment. Used by the JS event router for high-frequency
+// observation events that don't affect other panels.
+func (h *ConvoyHandler) ServeActivityPanel(w http.ResponseWriter, _ *http.Request) {
+	activity, err := h.fetcher.FetchActivity()
+	if err != nil {
+		log.Printf("dashboard: FetchActivity failed: %v", err)
+	}
+
+	data := ConvoyData{Activity: activity}
+
+	var buf bytes.Buffer
+	if err := h.template.ExecuteTemplate(&buf, "_panel_activity.html", data); err != nil {
+		log.Printf("dashboard: activity panel template failed: %v", err)
+		http.Error(w, "Failed to render panel", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if _, err := buf.WriteTo(w); err != nil {
+		log.Printf("dashboard: activity panel write failed: %v", err)
+	}
+}
+
 // computeSummary calculates dashboard stats and alerts from fetched data.
 func computeSummary(workers []WorkerRow, assigned []AssignedRow, issues []IssueRow,
 	convoys []ConvoyRow, escalations []EscalationRow, activity []ActivityRow,
@@ -326,6 +351,7 @@ func NewDashboardMux(fetcher ConvoyFetcher, cityPath, cityName, apiURL string,
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiHandler)
+	mux.HandleFunc("/panels/activity", convoyHandler.ServeActivityPanel)
 	mux.Handle("/static/", http.StripPrefix("/static/", staticHandler))
 	mux.Handle("/", convoyHandler)
 
