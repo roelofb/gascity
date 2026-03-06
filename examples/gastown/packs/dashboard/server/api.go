@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,8 +67,8 @@ type APIHandler struct {
 
 const optionsCacheTTL = 30 * time.Second
 
-// maxConcurrentCommands limits how many subprocesses can run at once.
-// handleOptions alone spawns 7; allow headroom for other concurrent handlers.
+// maxConcurrentCommands limits how many subprocesses can run at once
+// (used by /api/run command execution).
 const maxConcurrentCommands = 12
 
 // NewAPIHandler creates a new API handler with the given configuration.
@@ -90,11 +89,6 @@ func NewAPIHandler(cityPath, cityName, apiURL string, defaultRunTimeout, maxRunT
 		h.apiClient = &http.Client{Timeout: 15 * time.Second}
 	}
 	return h
-}
-
-// useAPI returns true when the API client is configured.
-func (h *APIHandler) useAPI() bool {
-	return h.apiURL != "" && h.apiClient != nil
 }
 
 // apiGet performs a GET against the GC API server and returns the body.
@@ -233,16 +227,14 @@ func (h *APIHandler) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try API fast-path for recognized commands.
-	if h.useAPI() {
-		if output, ok := h.runViaAPI(req.Command); ok {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(CommandResponse{
-				Command: req.Command,
-				Success: true,
-				Output:  output,
-			})
-			return
-		}
+	if output, ok := h.runViaAPI(req.Command); ok {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CommandResponse{
+			Command: req.Command,
+			Success: true,
+			Output:  output,
+		})
+		return
 	}
 
 	// Determine timeout
@@ -539,11 +531,7 @@ type MailThreadsResponse struct {
 
 // handleMailInbox returns the user's inbox.
 func (h *APIHandler) handleMailInbox(w http.ResponseWriter, r *http.Request) {
-	if h.useAPI() {
-		h.handleMailInboxAPI(w, r)
-		return
-	}
-	h.handleMailInboxSubprocess(w, r)
+	h.handleMailInboxAPI(w, r)
 }
 
 func (h *APIHandler) handleMailInboxAPI(w http.ResponseWriter, _ *http.Request) {
@@ -586,58 +574,9 @@ func (h *APIHandler) handleMailInboxAPI(w http.ResponseWriter, _ *http.Request) 
 	})
 }
 
-func (h *APIHandler) handleMailInboxSubprocess(w http.ResponseWriter, r *http.Request) {
-	output, err := h.runCommandWithSem(r.Context(), 10*time.Second, "gc", []string{"mail", "inbox", "--json"}, h.cityPath)
-	if err != nil {
-		output, err = h.runCommandWithSem(r.Context(), 10*time.Second, "gc", []string{"mail", "inbox"}, h.cityPath)
-		if err != nil {
-			h.sendError(w, "Failed to fetch inbox: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		messages := parseMailInboxText(output)
-		unread := 0
-		for _, m := range messages {
-			if !m.Read {
-				unread++
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(MailInboxResponse{
-			Messages:    messages,
-			UnreadCount: unread,
-			Total:       len(messages),
-		})
-		return
-	}
-
-	var messages []MailMessage
-	if err := json.Unmarshal([]byte(output), &messages); err != nil {
-		h.sendError(w, "Failed to parse inbox: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	unread := 0
-	for _, m := range messages {
-		if !m.Read {
-			unread++
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(MailInboxResponse{
-		Messages:    messages,
-		UnreadCount: unread,
-		Total:       len(messages),
-	})
-}
-
 // handleMailThreads returns the inbox grouped by conversation threads.
 func (h *APIHandler) handleMailThreads(w http.ResponseWriter, r *http.Request) {
-	if h.useAPI() {
-		h.handleMailThreadsAPI(w)
-		return
-	}
-	h.handleMailThreadsSubprocess(w, r)
+	h.handleMailThreadsAPI(w)
 }
 
 func (h *APIHandler) handleMailThreadsAPI(w http.ResponseWriter) {
@@ -665,50 +604,6 @@ func (h *APIHandler) handleMailThreadsAPI(w http.ResponseWriter) {
 			ThreadID:  m.ThreadID,
 			ReplyTo:   m.ReplyTo,
 		})
-	}
-
-	threads := groupIntoThreads(messages)
-	unread := 0
-	for _, t := range threads {
-		unread += t.UnreadCount
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(MailThreadsResponse{
-		Threads:     threads,
-		UnreadCount: unread,
-		Total:       len(messages),
-	})
-}
-
-func (h *APIHandler) handleMailThreadsSubprocess(w http.ResponseWriter, r *http.Request) {
-	output, err := h.runCommandWithSem(r.Context(), 10*time.Second, "gc", []string{"mail", "inbox", "--json"}, h.cityPath)
-	if err != nil {
-		// Fall back to text parsing
-		output, err = h.runCommandWithSem(r.Context(), 10*time.Second, "gc", []string{"mail", "inbox"}, h.cityPath)
-		if err != nil {
-			h.sendError(w, "Failed to fetch inbox: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		messages := parseMailInboxText(output)
-		threads := groupIntoThreads(messages)
-		unread := 0
-		for _, t := range threads {
-			unread += t.UnreadCount
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(MailThreadsResponse{
-			Threads:     threads,
-			UnreadCount: unread,
-			Total:       len(messages),
-		})
-		return
-	}
-
-	var messages []MailMessage
-	if err := json.Unmarshal([]byte(output), &messages); err != nil {
-		h.sendError(w, "Failed to parse inbox: "+err.Error(), http.StatusInternalServerError)
-		return
 	}
 
 	threads := groupIntoThreads(messages)
@@ -818,46 +713,32 @@ func (h *APIHandler) handleMailRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.useAPI() {
-		body, err := h.apiGet("/v0/mail/" + msgID)
-		if err != nil {
-			h.sendError(w, "Failed to read message: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// Mark as read via API.
-		_, _ = h.apiPost("/v0/mail/"+msgID+"/read", nil)
-
-		// Transform mail.Message JSON into dashboard MailMessage shape.
-		var apiMsg apiMailMessage
-		if err := json.Unmarshal(body, &apiMsg); err != nil {
-			h.sendError(w, "Failed to parse message: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		msg := MailMessage{
-			ID:        apiMsg.ID,
-			From:      apiMsg.From,
-			To:        apiMsg.To,
-			Subject:   apiMsg.Subject,
-			Body:      apiMsg.Body,
-			Timestamp: apiMsg.CreatedAt.Format(time.RFC3339),
-			Read:      true, // just marked as read
-			ThreadID:  apiMsg.ThreadID,
-			ReplyTo:   apiMsg.ReplyTo,
-			Priority:  mailPriorityString(apiMsg.Priority),
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(msg)
-		return
-	}
-
-	output, err := h.runCommandWithSem(r.Context(), 10*time.Second, "gc", []string{"mail", "read", msgID}, h.cityPath)
+	body, err := h.apiGet("/v0/mail/" + msgID)
 	if err != nil {
 		h.sendError(w, "Failed to read message: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Mark as read via API.
+	_, _ = h.apiPost("/v0/mail/"+msgID+"/read", nil)
 
-	msg := parseMailReadOutput(output, msgID)
-
+	// Transform mail.Message JSON into dashboard MailMessage shape.
+	var apiMsg apiMailMessage
+	if err := json.Unmarshal(body, &apiMsg); err != nil {
+		h.sendError(w, "Failed to parse message: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	msg := MailMessage{
+		ID:        apiMsg.ID,
+		From:      apiMsg.From,
+		To:        apiMsg.To,
+		Subject:   apiMsg.Subject,
+		Body:      apiMsg.Body,
+		Timestamp: apiMsg.CreatedAt.Format(time.RFC3339),
+		Read:      true, // just marked as read
+		ThreadID:  apiMsg.ThreadID,
+		ReplyTo:   apiMsg.ReplyTo,
+		Priority:  mailPriorityString(apiMsg.Priority),
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(msg)
 }
@@ -906,136 +787,33 @@ func (h *APIHandler) handleMailSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.useAPI() {
-		var err error
-		if req.ReplyTo != "" {
-			// Use the reply endpoint for threaded replies.
-			apiReq := map[string]string{
-				"from":    "dashboard",
-				"subject": req.Subject,
-				"body":    req.Body,
-			}
-			_, err = h.apiPost("/v0/mail/"+req.ReplyTo+"/reply", apiReq)
-		} else {
-			apiReq := map[string]string{
-				"from":    "dashboard",
-				"to":      req.To,
-				"subject": req.Subject,
-				"body":    req.Body,
-			}
-			_, err = h.apiPost("/v0/mail", apiReq)
-		}
-		if err != nil {
-			h.sendError(w, "Failed to send message: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"message": "Message sent",
-		})
-		return
-	}
-
-	args := []string{"mail", "send"}
-	args = append(args, "-s", req.Subject)
-	if req.Body != "" {
-		args = append(args, "-m", req.Body)
-	}
+	var err error
 	if req.ReplyTo != "" {
-		args = append(args, "--reply-to", req.ReplyTo)
+		// Use the reply endpoint for threaded replies.
+		apiReq := map[string]string{
+			"from":    "dashboard",
+			"subject": req.Subject,
+			"body":    req.Body,
+		}
+		_, err = h.apiPost("/v0/mail/"+req.ReplyTo+"/reply", apiReq)
+	} else {
+		apiReq := map[string]string{
+			"from":    "dashboard",
+			"to":      req.To,
+			"subject": req.Subject,
+			"body":    req.Body,
+		}
+		_, err = h.apiPost("/v0/mail", apiReq)
 	}
-	args = append(args, "--", req.To)
-
-	output, err := h.runCommandWithSem(r.Context(), 30*time.Second, "gc", args, h.cityPath)
 	if err != nil {
-		h.sendError(w, "Failed to send message: "+err.Error()+"\n"+output, http.StatusInternalServerError)
+		h.sendError(w, "Failed to send message: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "Message sent",
-		"output":  output,
 	})
-}
-
-// parseMailInboxText parses text output from "gc mail inbox".
-func parseMailInboxText(output string) []MailMessage {
-	var messages []MailMessage
-	lines := strings.Split(output, "\n")
-
-	var current *MailMessage
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "(no messages)") {
-			continue
-		}
-
-		// Check for numbered message line
-		if len(trimmed) > 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && trimmed[1] == '.' {
-			// Save previous message
-			if current != nil {
-				messages = append(messages, *current)
-			}
-			current = &MailMessage{}
-			rest := strings.TrimSpace(trimmed[2:])
-			if strings.Contains(rest, "unread") || strings.HasPrefix(rest, "*") {
-				current.Read = false
-				current.Subject = strings.TrimSpace(strings.TrimPrefix(rest, "*"))
-			} else {
-				current.Read = true
-				current.Subject = rest
-			}
-		} else if current != nil && current.ID == "" && strings.Contains(trimmed, " from ") {
-			parts := strings.SplitN(trimmed, " from ", 2)
-			if len(parts) == 2 {
-				current.ID = strings.TrimSpace(parts[0])
-				current.From = strings.TrimSpace(parts[1])
-			}
-		} else if current != nil && current.Timestamp == "" && (strings.Contains(trimmed, "-") || strings.Contains(trimmed, ":")) {
-			current.Timestamp = trimmed
-		}
-	}
-	// Don't forget the last one
-	if current != nil && current.ID != "" {
-		messages = append(messages, *current)
-	}
-
-	return messages
-}
-
-// parseMailReadOutput parses the output from "gc mail read <id>".
-func parseMailReadOutput(output string, msgID string) MailMessage {
-	msg := MailMessage{ID: msgID}
-	lines := strings.Split(output, "\n")
-
-	inBody := false
-	var bodyLines []string
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, "Subject: ") {
-			msg.Subject = strings.TrimSpace(strings.TrimPrefix(line, "Subject: "))
-		} else if strings.HasPrefix(line, "From: ") {
-			msg.From = strings.TrimPrefix(line, "From: ")
-		} else if strings.HasPrefix(line, "To: ") {
-			msg.To = strings.TrimPrefix(line, "To: ")
-		} else if strings.HasPrefix(line, "ID: ") {
-			msg.ID = strings.TrimPrefix(line, "ID: ")
-		} else if strings.HasPrefix(line, "Thread: ") {
-			msg.ThreadID = strings.TrimSpace(strings.TrimPrefix(line, "Thread: "))
-		} else if strings.HasPrefix(line, "Reply-To: ") {
-			msg.ReplyTo = strings.TrimSpace(strings.TrimPrefix(line, "Reply-To: "))
-		} else if line == "" && msg.From != "" && !inBody {
-			inBody = true
-		} else if inBody {
-			bodyLines = append(bodyLines, line)
-		}
-	}
-
-	msg.Body = strings.TrimSpace(strings.Join(bodyLines, "\n"))
-	return msg
 }
 
 // ---------- Options handler ----------
@@ -1080,12 +858,7 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 		h.optionsCacheMu.RUnlock()
 	}
 
-	var resp *OptionsResponse
-	if h.useAPI() {
-		resp = h.fetchOptionsAPI()
-	} else {
-		resp = h.fetchOptionsSubprocess(r)
-	}
+	resp := h.fetchOptionsAPI()
 
 	// Update cache
 	h.optionsCacheMu.Lock()
@@ -1199,222 +972,6 @@ func (h *APIHandler) fetchOptionsAPI() *OptionsResponse {
 	return resp
 }
 
-// fetchOptionsSubprocess fetches options data by spawning subprocesses.
-func (h *APIHandler) fetchOptionsSubprocess(r *http.Request) *OptionsResponse {
-	resp := &OptionsResponse{}
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	// Run all fetches in parallel with shorter timeouts
-	wg.Add(6)
-
-	// Fetch rigs
-	go func() {
-		defer wg.Done()
-		if output, err := h.runCommandWithSem(r.Context(), 3*time.Second, "gc", []string{"rig", "list"}, h.cityPath); err == nil {
-			mu.Lock()
-			resp.Rigs = parseRigListOutput(output)
-			mu.Unlock()
-		} else {
-			log.Printf("warning: handleOptions: rig list: %v", err)
-		}
-	}()
-
-	// Fetch convoys
-	go func() {
-		defer wg.Done()
-		if output, err := h.runCommandWithSem(r.Context(), 3*time.Second, "bd", []string{"list", "--type=convoy", "--json"}, h.cityPath); err == nil {
-			mu.Lock()
-			resp.Convoys = parseConvoyListJSON(output)
-			mu.Unlock()
-		} else {
-			log.Printf("warning: handleOptions: convoy list: %v", err)
-		}
-	}()
-
-	// Fetch hooks
-	go func() {
-		defer wg.Done()
-		if output, err := h.runCommandWithSem(r.Context(), 3*time.Second, "gc", []string{"hooks", "list"}, h.cityPath); err == nil {
-			mu.Lock()
-			resp.Hooks = parseHooksListOutput(output)
-			mu.Unlock()
-		} else {
-			log.Printf("warning: handleOptions: hooks list: %v", err)
-		}
-	}()
-
-	// Fetch mail messages
-	go func() {
-		defer wg.Done()
-		if output, err := h.runCommandWithSem(r.Context(), 3*time.Second, "gc", []string{"mail", "inbox"}, h.cityPath); err == nil {
-			mu.Lock()
-			resp.Messages = parseMailInboxOutput(output)
-			mu.Unlock()
-		} else {
-			log.Printf("warning: handleOptions: mail inbox: %v", err)
-		}
-	}()
-
-	// Fetch crew members
-	go func() {
-		defer wg.Done()
-		if output, err := h.runCommandWithSem(r.Context(), 3*time.Second, "gc", []string{"agent", "list", "--all"}, h.cityPath); err == nil {
-			mu.Lock()
-			resp.Crew = parseCrewListOutput(output)
-			mu.Unlock()
-		} else {
-			log.Printf("warning: handleOptions: agent list: %v", err)
-		}
-	}()
-
-	// Fetch agents - shorter timeout, skip if slow
-	go func() {
-		defer wg.Done()
-		if output, err := h.runCommandWithSem(r.Context(), 5*time.Second, "gc", []string{"status", "--json"}, h.cityPath); err == nil {
-			mu.Lock()
-			resp.Agents = parseAgentsFromStatus(output)
-			mu.Unlock()
-		} else {
-			log.Printf("warning: handleOptions: status: %v", err)
-		}
-	}()
-
-	wg.Wait()
-	return resp
-}
-
-// parseRigListOutput extracts rig names from the text output of "gc rig list".
-func parseRigListOutput(output string) []string {
-	var rigs []string
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		// Rig names are indented with 2 spaces and no colon
-		trimmed := strings.TrimPrefix(line, "  ")
-		if trimmed != line && !strings.Contains(trimmed, ":") && strings.TrimSpace(trimmed) != "" {
-			name := strings.TrimSpace(trimmed)
-			if name != "" && !strings.HasPrefix(name, "Rigs") {
-				rigs = append(rigs, name)
-			}
-		}
-	}
-	return rigs
-}
-
-// parseConvoyListJSON extracts convoy IDs from JSON output of "bd list --type=convoy --json".
-func parseConvoyListJSON(jsonStr string) []string {
-	var convoys []struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(jsonStr), &convoys); err != nil {
-		log.Printf("warning: parseConvoyListJSON: %v", err)
-		return nil
-	}
-	ids := make([]string, 0, len(convoys))
-	for _, c := range convoys {
-		if c.ID != "" {
-			ids = append(ids, c.ID)
-		}
-	}
-	return ids
-}
-
-// parseHooksListOutput extracts bead names from hooks list output.
-func parseHooksListOutput(output string) []string {
-	var hooks []string
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		// Skip header lines and empty lines
-		if trimmed != "" && !strings.HasPrefix(trimmed, "Hook") && !strings.HasPrefix(trimmed, "No ") && !strings.HasPrefix(trimmed, "BEAD") {
-			parts := strings.Fields(trimmed)
-			if len(parts) > 0 {
-				hooks = append(hooks, parts[0])
-			}
-		}
-	}
-	return hooks
-}
-
-// parseMailInboxOutput extracts message IDs from mail inbox output.
-func parseMailInboxOutput(output string) []string {
-	var messages []string
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(trimmed, "Mail") && !strings.HasPrefix(trimmed, "No ") && !strings.HasPrefix(trimmed, "ID") && !strings.HasPrefix(trimmed, "---") {
-			parts := strings.Fields(trimmed)
-			if len(parts) > 0 {
-				messages = append(messages, parts[0])
-			}
-		}
-	}
-	return messages
-}
-
-// parseCrewListOutput extracts agent names from agent list output.
-func parseCrewListOutput(output string) []string {
-	var crew []string
-	lines := strings.Split(output, "\n")
-	currentRig := ""
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		// Check if this is a rig header (ends with :)
-		if strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, " ") {
-			currentRig = strings.TrimSuffix(trimmed, ":")
-			continue
-		}
-		// Skip non-agent lines
-		if strings.HasPrefix(trimmed, "Crew") || strings.HasPrefix(trimmed, "Agents") || strings.HasPrefix(trimmed, "No ") {
-			continue
-		}
-		// This should be an agent name
-		if currentRig != "" {
-			parts := strings.Fields(trimmed)
-			if len(parts) > 0 {
-				crew = append(crew, currentRig+"/"+parts[0])
-			}
-		}
-	}
-	return crew
-}
-
-// parseAgentsFromStatus extracts agents with status from "gc status --json" output.
-func parseAgentsFromStatus(jsonStr string) []OptionItem {
-	var status struct {
-		Agents []struct {
-			Name    string `json:"name"`
-			Running bool   `json:"running"`
-			State   string `json:"state"`
-		} `json:"agents"`
-	}
-
-	if err := json.Unmarshal([]byte(jsonStr), &status); err != nil {
-		return nil
-	}
-
-	var agents []OptionItem
-	for _, a := range status.Agents {
-		state := a.State
-		if state == "" {
-			if a.Running {
-				state = "running"
-			} else {
-				state = "stopped"
-			}
-		}
-		agents = append(agents, OptionItem{
-			Name:    a.Name,
-			Status:  state,
-			Running: a.Running,
-		})
-	}
-	return agents
-}
-
 // ---------- Issue types and handlers ----------
 
 // IssueShowResponse is the response for /api/issues/show.
@@ -1451,48 +1008,24 @@ func (h *APIHandler) handleIssueShow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.useAPI() {
-		body, err := h.apiGet("/v0/bead/" + showID)
-		if err != nil {
-			h.sendError(w, "Failed to fetch issue: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		var bead apiBead
-		if err := json.Unmarshal(body, &bead); err != nil {
-			h.sendError(w, "Failed to parse issue: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		resp := IssueShowResponse{
-			ID:          issueID,
-			Title:       bead.Title,
-			Type:        bead.Type,
-			Status:      bead.Status,
-			Description: bead.Description,
-			Created:     bead.CreatedAt.Format(time.RFC3339),
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-		return
-	}
-
-	output, err := h.runCommandWithSem(r.Context(), 10*time.Second, "bd", []string{"show", showID, "--json"}, h.cityPath)
-	if err == nil {
-		if resp, ok := parseIssueShowJSON(output); ok {
-			resp.ID = issueID
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-			return
-		}
-	}
-
-	output, err = h.runCommandWithSem(r.Context(), 10*time.Second, "bd", []string{"show", showID}, h.cityPath)
+	body, err := h.apiGet("/v0/bead/" + showID)
 	if err != nil {
 		h.sendError(w, "Failed to fetch issue: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	resp := parseIssueShowOutput(output, issueID)
-
+	var bead apiBead
+	if err := json.Unmarshal(body, &bead); err != nil {
+		h.sendError(w, "Failed to parse issue: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp := IssueShowResponse{
+		ID:          issueID,
+		Title:       bead.Title,
+		Type:        bead.Type,
+		Status:      bead.Status,
+		Description: bead.Description,
+		Created:     bead.CreatedAt.Format(time.RFC3339),
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -1545,67 +1078,26 @@ func (h *APIHandler) handleIssueCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.useAPI() {
-		apiReq := map[string]interface{}{
-			"title":       req.Title,
-			"description": req.Description,
-		}
-		if req.Rig != "" {
-			apiReq["rig"] = req.Rig
-		}
-		body, err := h.apiPost("/v0/beads", apiReq)
-		resp := IssueCreateResponse{}
-		if err != nil {
-			resp.Success = false
-			resp.Error = "Failed to create issue: " + err.Error()
-		} else {
-			resp.Success = true
-			resp.Message = "Issue created"
-			var bead apiBead
-			if json.Unmarshal(body, &bead) == nil {
-				resp.ID = bead.ID
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-		return
+	apiReq := map[string]interface{}{
+		"title":       req.Title,
+		"description": req.Description,
 	}
-
-	args := []string{"create"}
-	if req.Priority >= 1 && req.Priority <= 4 {
-		args = append(args, fmt.Sprintf("--priority=%d", req.Priority))
+	if req.Rig != "" {
+		apiReq["rig"] = req.Rig
 	}
-	if req.Description != "" {
-		args = append(args, "--body", req.Description)
-	}
-	args = append(args, "--", req.Title)
-
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	output, err := h.runCommandWithSem(ctx, 12*time.Second, "bd", args, h.cityPath)
-
+	body, err := h.apiPost("/v0/beads", apiReq)
 	resp := IssueCreateResponse{}
 	if err != nil {
 		resp.Success = false
 		resp.Error = "Failed to create issue: " + err.Error()
-		if output != "" {
-			resp.Message = output
-		}
 	} else {
 		resp.Success = true
-		resp.Message = output
-		if strings.Contains(output, "Created") {
-			parts := strings.Fields(output)
-			for i, p := range parts {
-				if strings.HasSuffix(p, ":") && i+1 < len(parts) {
-					resp.ID = strings.TrimSpace(parts[i+1])
-					break
-				}
-			}
+		resp.Message = "Issue created"
+		var bead apiBead
+		if json.Unmarshal(body, &bead) == nil {
+			resp.ID = bead.ID
 		}
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -1632,38 +1124,18 @@ func (h *APIHandler) handleIssueClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.useAPI() {
-		_, err := h.apiPost("/v0/bead/"+req.ID+"/close", nil)
-		w.Header().Set("Content-Type", "application/json")
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"success": false,
-				"error":   "Failed to close issue: " + err.Error(),
-			})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"message": "Issue closed",
-		})
-		return
-	}
-
-	output, err := h.runCommandWithSem(r.Context(), 12*time.Second, "bd", []string{"close", req.ID}, h.cityPath)
-
+	_, err := h.apiPost("/v0/bead/"+req.ID+"/close", nil)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
 			"error":   "Failed to close issue: " + err.Error(),
-			"output":  output,
 		})
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "Issue closed",
-		"output":  output,
 	})
 }
 
@@ -1712,189 +1184,23 @@ func (h *APIHandler) handleIssueUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.useAPI() {
-		apiReq := make(map[string]interface{})
-		if req.Assignee != "" {
-			apiReq["assignee"] = req.Assignee
-		}
-		_, err := h.apiPost("/v0/bead/"+req.ID+"/update", apiReq)
-		w.Header().Set("Content-Type", "application/json")
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"success": false,
-				"error":   "Failed to update issue: " + err.Error(),
-			})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"message": "Issue updated",
-		})
-		return
-	}
-
-	args := []string{"update", req.ID}
-	if req.Status != "" {
-		args = append(args, "--status="+req.Status)
-	}
-	if req.Priority >= 1 && req.Priority <= 4 {
-		args = append(args, fmt.Sprintf("--priority=%d", req.Priority))
-	}
+	apiReq := make(map[string]interface{})
 	if req.Assignee != "" {
-		args = append(args, "--assignee="+req.Assignee)
+		apiReq["assignee"] = req.Assignee
 	}
-
-	output, err := h.runCommandWithSem(r.Context(), 12*time.Second, "bd", args, h.cityPath)
-
+	_, err := h.apiPost("/v0/bead/"+req.ID+"/update", apiReq)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
 			"error":   "Failed to update issue: " + err.Error(),
-			"output":  output,
 		})
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "Issue updated",
-		"output":  output,
 	})
-}
-
-// parseIssueShowJSON parses the JSON output from "bd show <id> --json".
-// Returns (response, true) on success, or (zero, false) if parsing fails.
-func parseIssueShowJSON(output string) (IssueShowResponse, bool) {
-	var items []struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Description string   `json:"description"`
-		Status      string   `json:"status"`
-		Priority    int      `json:"priority"`
-		Type        string   `json:"issue_type"`
-		Owner       string   `json:"owner"`
-		CreatedAt   string   `json:"created_at"`
-		UpdatedAt   string   `json:"updated_at"`
-		DependsOn   []string `json:"depends_on,omitempty"`
-		Blocks      []string `json:"blocks,omitempty"`
-	}
-	if err := json.Unmarshal([]byte(output), &items); err != nil || len(items) == 0 {
-		return IssueShowResponse{}, false
-	}
-	item := items[0]
-
-	priority := ""
-	if item.Priority > 0 {
-		priority = fmt.Sprintf("P%d", item.Priority)
-	}
-
-	return IssueShowResponse{
-		ID:          item.ID,
-		Title:       item.Title,
-		Type:        item.Type,
-		Status:      item.Status,
-		Priority:    priority,
-		Owner:       item.Owner,
-		Description: item.Description,
-		Created:     item.CreatedAt,
-		Updated:     item.UpdatedAt,
-		DependsOn:   item.DependsOn,
-		Blocks:      item.Blocks,
-		RawOutput:   output,
-	}, true
-}
-
-// parseIssueShowOutput parses the text output from "bd show <id>".
-// This is the fallback path when --json is unavailable.
-func parseIssueShowOutput(output string, issueID string) IssueShowResponse {
-	resp := IssueShowResponse{
-		ID:        issueID,
-		RawOutput: output,
-	}
-
-	lines := strings.Split(output, "\n")
-	inDescription := false
-	parsedFirstLine := false
-	var descLines []string
-	var dependsOn []string
-	var blocks []string
-
-	for _, line := range lines {
-		if !parsedFirstLine && len(line) > 0 {
-			parsedFirstLine = true
-			if bracketIdx := strings.Index(line, "["); bracketIdx > 0 {
-				beforeBracket := line[:bracketIdx]
-				statusPart := line[bracketIdx:]
-
-				statusPart = strings.Trim(statusPart, "[] ")
-				statusParts := strings.Split(statusPart, " ")
-				if len(statusParts) >= 1 {
-					resp.Priority = strings.TrimSpace(statusParts[0])
-				}
-				if len(statusParts) >= 2 {
-					resp.Status = strings.TrimSpace(statusParts[len(statusParts)-1])
-				}
-
-				// Parse title from before the bracket
-				parts := strings.SplitN(beforeBracket, " ", 3)
-				if len(parts) >= 3 {
-					resp.Title = strings.TrimSpace(parts[2])
-				} else if len(parts) >= 2 {
-					resp.Title = strings.TrimSpace(parts[1])
-				}
-			}
-			continue
-		}
-
-		if strings.HasPrefix(line, "Owner:") {
-			ownerLine := strings.TrimPrefix(line, "Owner:")
-			ownerParts := strings.SplitN(ownerLine, " ", 3)
-			resp.Owner = strings.TrimSpace(ownerParts[0])
-			if len(ownerParts) >= 3 && strings.Contains(ownerLine, "Type:") {
-				idx := strings.Index(ownerLine, "Type:")
-				if idx >= 0 {
-					resp.Type = strings.TrimSpace(ownerLine[idx+5:])
-				}
-			}
-		} else if strings.HasPrefix(line, "Type:") {
-			resp.Type = strings.TrimSpace(strings.TrimPrefix(line, "Type:"))
-		} else if strings.HasPrefix(line, "Created:") {
-			parts := strings.SplitN(line, " ", 4)
-			if len(parts) >= 2 {
-				resp.Created = strings.TrimSpace(strings.TrimPrefix(parts[0]+" "+parts[1], "Created:"))
-			}
-			if strings.Contains(line, "Updated:") {
-				idx := strings.Index(line, "Updated:")
-				if idx >= 0 {
-					resp.Updated = strings.TrimSpace(line[idx+8:])
-				}
-			}
-		} else if line == "DESCRIPTION" {
-			inDescription = true
-		} else if line == "DEPENDS ON" || line == "BLOCKS" {
-			inDescription = false
-		} else if inDescription && strings.TrimSpace(line) != "" {
-			descLines = append(descLines, line)
-		} else if strings.HasPrefix(strings.TrimSpace(line), "->") || strings.Contains(line, "depends") {
-			depLine := strings.TrimSpace(line)
-			parts := strings.Fields(depLine)
-			if len(parts) >= 2 {
-				dependsOn = append(dependsOn, parts[len(parts)-1])
-			}
-		} else if strings.HasPrefix(strings.TrimSpace(line), "<-") || strings.Contains(line, "blocks") {
-			blockLine := strings.TrimSpace(line)
-			parts := strings.Fields(blockLine)
-			if len(parts) >= 2 {
-				blocks = append(blocks, parts[len(parts)-1])
-			}
-		}
-	}
-
-	resp.Description = strings.TrimSpace(strings.Join(descLines, "\n"))
-	resp.DependsOn = dependsOn
-	resp.Blocks = blocks
-
-	return resp
 }
 
 // ---------- PR handler ----------
@@ -2076,12 +1382,8 @@ type CrewResponse struct {
 }
 
 // handleCrew returns crew status across all rigs with proper state detection.
-func (h *APIHandler) handleCrew(w http.ResponseWriter, r *http.Request) {
-	if h.useAPI() {
-		h.handleCrewAPI(w)
-		return
-	}
-	h.handleCrewSubprocess(w, r)
+func (h *APIHandler) handleCrew(w http.ResponseWriter, _ *http.Request) {
+	h.handleCrewAPI(w)
 }
 
 func (h *APIHandler) handleCrewAPI(w http.ResponseWriter) {
@@ -2143,196 +1445,6 @@ func (h *APIHandler) handleCrewAPI(w http.ResponseWriter) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (h *APIHandler) handleCrewSubprocess(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	output, err := h.runCommandWithSem(ctx, 10*time.Second, "gc", []string{"agent", "list", "--all", "--json"}, h.cityPath)
-
-	resp := CrewResponse{
-		Crew:  make([]CrewMember, 0),
-		ByRig: make(map[string][]CrewMember),
-	}
-
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-		return
-	}
-
-	var crewData []struct {
-		Name    string `json:"name"`
-		Rig     string `json:"rig"`
-		Branch  string `json:"branch"`
-		Session string `json:"session,omitempty"`
-		Hook    string `json:"hook,omitempty"`
-	}
-
-	if err := json.Unmarshal([]byte(output), &crewData); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-		return
-	}
-
-	for _, c := range crewData {
-		sessionName := c.Rig + "-" + c.Name
-		state, lastActive, sessionStatus := h.detectCrewState(ctx, sessionName, c.Hook)
-
-		member := CrewMember{
-			Name:       c.Name,
-			Rig:        c.Rig,
-			State:      state,
-			Hook:       c.Hook,
-			Session:    sessionStatus,
-			LastActive: lastActive,
-		}
-		resp.Crew = append(resp.Crew, member)
-		resp.ByRig[c.Rig] = append(resp.ByRig[c.Rig], member)
-	}
-	resp.Total = len(resp.Crew)
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
-}
-
-// detectCrewState determines crew member state from tmux session.
-// Returns: state (spinning/finished/questions/ready), lastActive string, session status
-func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook string) (string, string, string) {
-	// Check if tmux session exists and get activity
-	cmd := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", "#{session_name}|#{window_activity}|#{session_attached}")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		// tmux not running - agent is ready (no session)
-		return "ready", "", "none"
-	}
-
-	// Find our session
-	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-	for _, line := range lines {
-		parts := strings.Split(line, "|")
-		if len(parts) < 3 || parts[0] != sessionName {
-			continue
-		}
-
-		// Found session
-		var activityUnix int64
-		if _, err := fmt.Sscanf(parts[1], "%d", &activityUnix); err != nil {
-			continue
-		}
-		attached := parts[2] == "1"
-
-		sessionStatus := "detached"
-		if attached {
-			sessionStatus = "attached"
-		}
-
-		// Calculate activity age
-		activityAge := time.Since(time.Unix(activityUnix, 0))
-		lastActive := formatTimestamp(time.Unix(activityUnix, 0))
-
-		// Check if Claude is running in the session
-		isAgentRunning := h.isAgentRunningInSession(ctx, sessionName)
-
-		// Determine state based on activity and agent status
-		state := determineCrewState(activityAge, isAgentRunning, hook)
-
-		// Check for questions if state is potentially finished
-		if state == "finished" || (state == "ready" && hook != "") {
-			if h.hasQuestionInPane(ctx, sessionName) {
-				state = "questions"
-			}
-		}
-
-		return state, lastActive, sessionStatus
-	}
-
-	// Session not found
-	return "ready", "", "none"
-}
-
-// isAgentRunningInSession checks if an agent is actively running in a tmux session.
-func (h *APIHandler) isAgentRunningInSession(ctx context.Context, sessionName string) bool {
-	// Target pane 0 explicitly (:0.0) to avoid false positives from
-	// user-created split panes running shells or other commands.
-	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", sessionName+":0.0", "-p", "#{pane_current_command}")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-
-	output := strings.ToLower(strings.TrimSpace(stdout.String()))
-	if output == "" {
-		return false
-	}
-	// Check for common agent commands
-	return strings.Contains(output, "claude") ||
-		strings.Contains(output, "node") ||
-		strings.Contains(output, "codex") ||
-		strings.Contains(output, "opencode")
-}
-
-// hasQuestionInPane checks the last output for question indicators.
-func (h *APIHandler) hasQuestionInPane(ctx context.Context, sessionName string) bool {
-	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p", "-J")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-
-	// Get last few lines
-	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-	lastLines := ""
-	if len(lines) > 10 {
-		lastLines = strings.Join(lines[len(lines)-10:], "\n")
-	} else {
-		lastLines = strings.Join(lines, "\n")
-	}
-	lastLines = strings.ToLower(lastLines)
-
-	// Look for question indicators
-	questionIndicators := []string{
-		"?",
-		"what do you think",
-		"should i",
-		"would you like",
-		"please confirm",
-		"waiting for",
-		"need your input",
-		"your thoughts",
-		"let me know",
-	}
-
-	for _, indicator := range questionIndicators {
-		if strings.Contains(lastLines, indicator) {
-			return true
-		}
-	}
-	return false
-}
-
-// determineCrewState determines state from activity and agent status.
-func determineCrewState(activityAge time.Duration, isAgentRunning bool, hook string) string {
-	if !isAgentRunning {
-		if hook != "" {
-			return "finished" // Had work, agent stopped = finished
-		}
-		return "ready" // No work, agent stopped = ready for work
-	}
-
-	// Agent is running
-	switch {
-	case activityAge < 2*time.Minute:
-		return "spinning" // Active recently
-	case activityAge < 10*time.Minute:
-		return "spinning" // Still probably working
-	default:
-		return "questions" // Running but no activity = likely waiting for input
-	}
-}
-
 // ---------- Ready handler ----------
 
 // ReadyItem represents a ready work item.
@@ -2357,81 +1469,8 @@ type ReadyResponse struct {
 }
 
 // handleReady returns ready work items across the city.
-func (h *APIHandler) handleReady(w http.ResponseWriter, r *http.Request) {
-	if h.useAPI() {
-		h.handleReadyAPI(w)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	output, err := h.runCommandWithSem(ctx, 12*time.Second, "gc", []string{"ready", "--json"}, h.cityPath)
-
-	resp := ReadyResponse{
-		Items:    make([]ReadyItem, 0),
-		BySource: make(map[string][]ReadyItem),
-	}
-
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-		return
-	}
-
-	// Parse the JSON output from gc ready
-	var readyData struct {
-		Sources []struct {
-			Name   string `json:"name"`
-			Issues []struct {
-				ID       string `json:"id"`
-				Title    string `json:"title"`
-				Priority int    `json:"priority"`
-				Type     string `json:"type"`
-			} `json:"issues"`
-		} `json:"sources"`
-		Summary struct {
-			Total   int `json:"total"`
-			P1Count int `json:"p1_count"`
-			P2Count int `json:"p2_count"`
-			P3Count int `json:"p3_count"`
-		} `json:"summary"`
-	}
-
-	if err := json.Unmarshal([]byte(output), &readyData); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-		return
-	}
-
-	// Convert to ReadyItem format
-	for _, src := range readyData.Sources {
-		for _, issue := range src.Issues {
-			item := ReadyItem{
-				ID:       issue.ID,
-				Title:    issue.Title,
-				Priority: issue.Priority,
-				Source:   src.Name,
-				Type:     issue.Type,
-			}
-			resp.Items = append(resp.Items, item)
-			resp.BySource[src.Name] = append(resp.BySource[src.Name], item)
-
-			// Count priorities
-			switch issue.Priority {
-			case 1:
-				resp.Summary.P1Count++
-			case 2:
-				resp.Summary.P2Count++
-			case 3:
-				resp.Summary.P3Count++
-			}
-		}
-	}
-	resp.Summary.Total = len(resp.Items)
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+func (h *APIHandler) handleReady(w http.ResponseWriter, _ *http.Request) {
+	h.handleReadyAPI(w)
 }
 
 func (h *APIHandler) handleReadyAPI(w http.ResponseWriter) {
@@ -2494,56 +1533,28 @@ func (h *APIHandler) handleSessionPreview(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	if h.useAPI() {
-		body, err := h.apiGet("/v0/agent/" + sessionName + "/peek")
-		if err != nil {
-			h.sendError(w, "Failed to peek agent: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		var peekResp struct {
-			Output string `json:"output"`
-		}
-		if json.Unmarshal(body, &peekResp) == nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(SessionPreviewResponse{
-				Session:   sessionName,
-				Content:   peekResp.Output,
-				Timestamp: time.Now().Format(time.RFC3339),
-			})
-			return
-		}
-		// Fallback: return raw body as content.
+	body, err := h.apiGet("/v0/agent/" + sessionName + "/peek")
+	if err != nil {
+		h.sendError(w, "Failed to peek agent: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var peekResp struct {
+		Output string `json:"output"`
+	}
+	if json.Unmarshal(body, &peekResp) == nil {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(SessionPreviewResponse{
 			Session:   sessionName,
-			Content:   string(body),
+			Content:   peekResp.Output,
 			Timestamp: time.Now().Format(time.RFC3339),
 		})
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p", "-J", "-S", "-30")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			h.sendError(w, "tmux capture-pane timed out", http.StatusGatewayTimeout)
-			return
-		}
-		h.sendError(w, "Failed to capture pane: "+stderr.String(), http.StatusInternalServerError)
-		return
-	}
-
+	// Fallback: return raw body as content.
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(SessionPreviewResponse{
 		Session:   sessionName,
-		Content:   stdout.String(),
+		Content:   string(body),
 		Timestamp: time.Now().Format(time.RFC3339),
 	})
 }
@@ -2590,11 +1601,7 @@ func parseCommandArgs(command string) []string {
 
 // handleSSE streams Server-Sent Events to the dashboard client.
 func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
-	if h.useAPI() {
-		h.handleSSEProxy(w, r)
-		return
-	}
-	h.handleSSESubprocess(w, r)
+	h.handleSSEProxy(w, r)
 }
 
 // handleSSEProxy proxies the API server's SSE event stream to the browser.
@@ -2651,101 +1658,6 @@ func (h *APIHandler) handleSSEProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		// Comments (keepalives) and other lines are silently consumed.
 	}
-}
-
-// handleSSESubprocess polls gc status and compares hashes to detect changes.
-func (h *APIHandler) handleSSESubprocess(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "SSE not supported", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	ctx := r.Context()
-
-	fmt.Fprintf(w, "event: connected\ndata: ok\n\n")
-	flusher.Flush()
-
-	var lastHash string
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	keepalive := time.NewTicker(15 * time.Second)
-	defer keepalive.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-keepalive.C:
-			fmt.Fprintf(w, ": keepalive\n\n")
-			flusher.Flush()
-		case <-ticker.C:
-			hash := h.computeDashboardHash(ctx)
-			if hash != "" && hash != lastHash {
-				lastHash = hash
-				fmt.Fprintf(w, "event: dashboard-update\ndata: %s\n\n", hash)
-				flusher.Flush()
-			}
-		}
-	}
-}
-
-// computeDashboardHash generates a lightweight hash of key dashboard state.
-// It runs quick commands in parallel and hashes their output to detect changes.
-func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	var mu sync.Mutex
-	var parts []string
-
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	// Check status
-	go func() {
-		defer wg.Done()
-		if out, err := h.runCommandWithSem(ctx, 3*time.Second, "gc", []string{"status", "--json"}, h.cityPath); err == nil {
-			mu.Lock()
-			parts = append(parts, "status:"+out)
-			mu.Unlock()
-		}
-	}()
-
-	// Check hooks state
-	go func() {
-		defer wg.Done()
-		if out, err := h.runCommandWithSem(ctx, 3*time.Second, "gc", []string{"hooks", "list"}, h.cityPath); err == nil {
-			mu.Lock()
-			parts = append(parts, "hooks:"+out)
-			mu.Unlock()
-		}
-	}()
-
-	// Check mail count
-	go func() {
-		defer wg.Done()
-		if out, err := h.runCommandWithSem(ctx, 3*time.Second, "gc", []string{"mail", "inbox"}, h.cityPath); err == nil {
-			mu.Lock()
-			parts = append(parts, "mail:"+out)
-			mu.Unlock()
-		}
-	}()
-
-	wg.Wait()
-
-	if len(parts) == 0 {
-		return ""
-	}
-
-	h256 := sha256.Sum256([]byte(strings.Join(parts, "|")))
-	return fmt.Sprintf("%x", h256[:8])
 }
 
 // mailPriorityString converts numeric mail priority to display string.

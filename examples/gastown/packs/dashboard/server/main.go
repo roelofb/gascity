@@ -3,11 +3,7 @@
 // This is a standalone HTTP server that provides an HTMX/SSE dashboard for
 // visualizing Gas City state: convoys, agents, mail, rigs, sessions, events.
 //
-// Data sources:
-//   - bd (beads CLI) for convoy, issue, mail, and hook data
-//   - gc status/agent/events for city and agent status
-//   - tmux for session previews
-//   - gh for merge queue data
+// Data source: GC API server (required).
 package main
 
 import (
@@ -31,14 +27,12 @@ func main() {
 	if *cityName == "" {
 		log.Fatal("dashboard: -city-name flag is required")
 	}
-
-	var fetcher ConvoyFetcher
-	if *apiURL != "" {
-		log.Printf("dashboard: using API server at %s", *apiURL)
-		fetcher = NewAPIFetcher(*apiURL, *cityPath, *cityName)
-	} else {
-		fetcher = NewLiveConvoyFetcher(*cityPath, *cityName)
+	if *apiURL == "" {
+		log.Fatal("dashboard: -api flag is required (GC API server URL)")
 	}
+
+	log.Printf("dashboard: using API server at %s", *apiURL)
+	fetcher := NewAPIFetcher(*apiURL, *cityPath, *cityName)
 
 	mux, err := NewDashboardMux(
 		fetcher,

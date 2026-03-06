@@ -89,7 +89,7 @@ type QueueRow struct {
 	Failed     int
 }
 
-// SessionRow represents a tmux session.
+// SessionRow represents an agent session.
 type SessionRow struct {
 	Name     string // Session name
 	Role     string // Agent role
@@ -111,7 +111,7 @@ type HookRow struct {
 
 // MayorStatus represents the coordinator agent's current state.
 type MayorStatus struct {
-	IsAttached   bool   // True if tmux session exists
+	IsAttached   bool   // True if session is attached
 	SessionName  string // Tmux session name
 	LastActivity string // Age since last activity
 	IsActive     bool   // True if activity < 5 min (likely working)

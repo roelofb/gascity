@@ -15,7 +15,7 @@ import (
 // APIFetcher implements ConvoyFetcher by calling the GC API server.
 type APIFetcher struct {
 	baseURL  string       // e.g. "http://127.0.0.1:8080"
-	cityPath string       // for FetchMergeQueue subprocess fallback
+	cityPath string       // city directory path
 	cityName string       // for display
 	client   *http.Client // shared client with timeout
 }
@@ -53,6 +53,7 @@ type apiAgentResponse struct {
 type apiSessionInfo struct {
 	Name         string     `json:"name"`
 	LastActivity *time.Time `json:"last_activity,omitempty"`
+	Attached     bool       `json:"attached"`
 }
 
 type apiRigResponse struct {
@@ -247,6 +248,9 @@ func (f *APIFetcher) FetchWorkers() ([]WorkerRow, error) {
 		workStatus := calculateWorkerWorkStatus(activityAge, issueID, agent.Name,
 			5*time.Minute, defaultGUPPViolationTimeout)
 
+		// Get status hint via peek API.
+		statusHint := f.getStatusHint(agent.Name)
+
 		workers = append(workers, WorkerRow{
 			Name:         agent.Name,
 			Rig:          agent.Rig,
@@ -256,6 +260,7 @@ func (f *APIFetcher) FetchWorkers() ([]WorkerRow, error) {
 			IssueTitle:   issueTitle,
 			WorkStatus:   workStatus,
 			AgentType:    "agent",
+			StatusHint:   statusHint,
 		})
 	}
 
@@ -313,8 +318,8 @@ func (f *APIFetcher) FetchMayor() (*MayorStatus, error) {
 		return status, nil
 	}
 
-	status.IsAttached = mayor.Running
 	if mayor.Session != nil {
+		status.IsAttached = mayor.Session.Attached
 		status.SessionName = mayor.Session.Name
 		if mayor.Session.LastActivity != nil {
 			age := time.Since(*mayor.Session.LastActivity)
@@ -631,7 +636,7 @@ func (f *APIFetcher) FetchQueues() ([]QueueRow, error) {
 			Status: b.Status,
 		}
 
-		// Parse counts from description (same format as LiveConvoyFetcher).
+		// Parse counts from description.
 		for _, line := range strings.Split(b.Description, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "available_count:") {
@@ -741,10 +746,98 @@ func (f *APIFetcher) FetchActivity() ([]ActivityRow, error) {
 	return rows, nil
 }
 
-// FetchMergeQueue stays subprocess-based — external GitHub data not in API.
+// FetchMergeQueue fetches open PRs from registered rigs via the API + gh CLI.
 func (f *APIFetcher) FetchMergeQueue() ([]MergeQueueRow, error) {
-	// Delegate to a minimal subprocess fetcher for gh pr list.
-	// We reuse the LiveConvoyFetcher's merge queue logic.
-	live := NewLiveConvoyFetcher(f.cityPath, f.cityName)
-	return live.FetchMergeQueue()
+	// Get rig paths from the API.
+	var rigs []apiRigResponse
+	if err := f.getList("/v0/rigs", &rigs); err != nil {
+		return nil, fmt.Errorf("fetching rigs for merge queue: %w", err)
+	}
+
+	ghTimeout := 10 * time.Second
+
+	var result []MergeQueueRow
+	for _, rig := range rigs {
+		if rig.Path == "" {
+			continue
+		}
+		repoPath := detectRepoFromPath(rig.Path, ghTimeout)
+		if repoPath == "" {
+			continue
+		}
+
+		prs, err := fetchPRsForRepo(repoPath, rig.Name, ghTimeout)
+		if err != nil {
+			continue
+		}
+		result = append(result, prs...)
+	}
+
+	return result, nil
+}
+
+// getStatusHint fetches the last non-empty line from an agent's peek output.
+func (f *APIFetcher) getStatusHint(agentName string) string {
+	var peekResp struct {
+		Output string `json:"output"`
+	}
+	if err := f.get("/v0/agent/"+agentName+"/peek", &peekResp); err != nil {
+		return ""
+	}
+	if peekResp.Output == "" {
+		return ""
+	}
+
+	lines := strings.Split(peekResp.Output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			if len(line) > 60 {
+				line = line[:57] + "..."
+			}
+			return line
+		}
+	}
+	return ""
+}
+
+// detectRepoFromPath tries to extract owner/repo from a git working directory.
+func detectRepoFromPath(path string, timeout time.Duration) string {
+	stdout, err := runCmd(timeout, "git", "-C", path, "remote", "get-url", "origin")
+	if err != nil {
+		return ""
+	}
+	return gitURLToRepoPath(strings.TrimSpace(stdout.String()))
+}
+
+// fetchPRsForRepo fetches open PRs for a single repo via gh CLI.
+func fetchPRsForRepo(repoFull, repoShort string, timeout time.Duration) ([]MergeQueueRow, error) {
+	stdout, err := runCmd(timeout, "gh", "pr", "list",
+		"--repo", repoFull,
+		"--state", "open",
+		"--json", "number,title,url,mergeable,statusCheckRollup")
+	if err != nil {
+		return nil, fmt.Errorf("fetching PRs for %s: %w", repoFull, err)
+	}
+
+	var prs []prResponse
+	if err := json.Unmarshal(stdout.Bytes(), &prs); err != nil {
+		return nil, fmt.Errorf("parsing PRs for %s: %w", repoFull, err)
+	}
+
+	result := make([]MergeQueueRow, 0, len(prs))
+	for _, pr := range prs {
+		row := MergeQueueRow{
+			Number: pr.Number,
+			Repo:   repoShort,
+			Title:  pr.Title,
+			URL:    pr.URL,
+		}
+		row.CIStatus = determineCIStatus(pr.StatusCheckRollup)
+		row.Mergeable = determineMergeableStatus(pr.Mergeable)
+		row.ColorClass = determineColorClass(row.CIStatus, row.Mergeable)
+		result = append(result, row)
+	}
+
+	return result, nil
 }
