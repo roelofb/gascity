@@ -25,6 +25,7 @@ func TestFileStore(t *testing.T) {
 	beadstest.RunStoreTests(t, factory)
 	beadstest.RunSequentialIDTests(t, factory)
 	beadstest.RunCreationOrderTests(t, factory)
+	beadstest.RunDepTests(t, factory)
 }
 
 func TestFileStorePersistence(t *testing.T) {
@@ -74,6 +75,65 @@ func TestFileStorePersistence(t *testing.T) {
 	}
 	if b3.ID != "gc-3" {
 		t.Errorf("third bead ID = %q, want %q", b3.ID, "gc-3")
+	}
+}
+
+func TestFileStoreDepPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "beads.json")
+
+	// First process: create deps.
+	s1, err := beads.OpenFileStore(fsys.OSFS{}, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.DepAdd("a", "b", "blocks"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second process: reopen and verify deps survived.
+	s2, err := beads.OpenFileStore(fsys.OSFS{}, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps, err := s2.DepList("a", "down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 1 {
+		t.Fatalf("DepList after reopen = %d deps, want 1", len(deps))
+	}
+	if deps[0].DependsOnID != "b" {
+		t.Errorf("dep.DependsOnID = %q, want %q", deps[0].DependsOnID, "b")
+	}
+}
+
+func TestFileStoreMetadataPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "beads.json")
+
+	// First process: create bead with metadata.
+	s1, err := beads.OpenFileStore(fsys.OSFS{}, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s1.Create(beads.Bead{Title: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.SetMetadata(b.ID, "convoy.owner", "mayor"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second process: verify metadata survived.
+	s2, err := beads.OpenFileStore(fsys.OSFS{}, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s2.Get(b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata["convoy.owner"] != "mayor" {
+		t.Errorf("Metadata[convoy.owner] = %q, want %q", got.Metadata["convoy.owner"], "mayor")
 	}
 }
 

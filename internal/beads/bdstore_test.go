@@ -958,3 +958,128 @@ func TestBdStorePassesDir(t *testing.T) {
 		t.Errorf("dir = %q, want %q", gotDir, "/my/city")
 	}
 }
+
+// --- DepAdd ---
+
+func TestBdStoreDepAdd(t *testing.T) {
+	var gotArgs []string
+	runner := func(_, _ string, args ...string) ([]byte, error) {
+		gotArgs = args
+		return nil, nil
+	}
+	s := beads.NewBdStore("/city", runner)
+	err := s.DepAdd("bd-42", "bd-41", "blocks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := "dep add bd-42 bd-41 --type blocks"
+	if strings.Join(gotArgs, " ") != wantArgs {
+		t.Errorf("args = %q, want %q", strings.Join(gotArgs, " "), wantArgs)
+	}
+}
+
+func TestBdStoreDepAddError(t *testing.T) {
+	runner := func(_, _ string, _ ...string) ([]byte, error) {
+		return nil, fmt.Errorf("exit status 1")
+	}
+	s := beads.NewBdStore("/city", runner)
+	err := s.DepAdd("bd-42", "bd-41", "blocks")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "adding dep") {
+		t.Errorf("error = %q, want 'adding dep'", err)
+	}
+}
+
+// --- DepRemove ---
+
+func TestBdStoreDepRemove(t *testing.T) {
+	var gotArgs []string
+	runner := func(_, _ string, args ...string) ([]byte, error) {
+		gotArgs = args
+		return nil, nil
+	}
+	s := beads.NewBdStore("/city", runner)
+	err := s.DepRemove("bd-42", "bd-41")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := "dep remove bd-42 bd-41"
+	if strings.Join(gotArgs, " ") != wantArgs {
+		t.Errorf("args = %q, want %q", strings.Join(gotArgs, " "), wantArgs)
+	}
+}
+
+// --- DepList ---
+
+func TestBdStoreDepListDown(t *testing.T) {
+	runner := fakeRunner(map[string]struct {
+		out []byte
+		err error
+	}{
+		`bd dep list bd-42 --json`: {
+			out: []byte(`[{"id":"bd-41","title":"blocker","status":"open","issue_type":"task","created_at":"2026-03-06T10:00:00Z","dependency_type":"blocks"}]`),
+		},
+	})
+	s := beads.NewBdStore("/city", runner)
+	deps, err := s.DepList("bd-42", "down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 1 {
+		t.Fatalf("DepList = %d deps, want 1", len(deps))
+	}
+	if deps[0].IssueID != "bd-42" {
+		t.Errorf("IssueID = %q, want %q", deps[0].IssueID, "bd-42")
+	}
+	if deps[0].DependsOnID != "bd-41" {
+		t.Errorf("DependsOnID = %q, want %q", deps[0].DependsOnID, "bd-41")
+	}
+	if deps[0].Type != "blocks" {
+		t.Errorf("Type = %q, want %q", deps[0].Type, "blocks")
+	}
+}
+
+func TestBdStoreDepListUp(t *testing.T) {
+	runner := fakeRunner(map[string]struct {
+		out []byte
+		err error
+	}{
+		`bd dep list bd-41 --json --direction=up`: {
+			out: []byte(`[{"id":"bd-42","title":"dependent","status":"open","issue_type":"task","created_at":"2026-03-06T10:00:00Z","dependency_type":"blocks"}]`),
+		},
+	})
+	s := beads.NewBdStore("/city", runner)
+	deps, err := s.DepList("bd-41", "up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 1 {
+		t.Fatalf("DepList = %d deps, want 1", len(deps))
+	}
+	// "up" on bd-41: bd-42 depends on bd-41.
+	if deps[0].IssueID != "bd-42" {
+		t.Errorf("IssueID = %q, want %q", deps[0].IssueID, "bd-42")
+	}
+	if deps[0].DependsOnID != "bd-41" {
+		t.Errorf("DependsOnID = %q, want %q", deps[0].DependsOnID, "bd-41")
+	}
+}
+
+func TestBdStoreDepListEmpty(t *testing.T) {
+	runner := fakeRunner(map[string]struct {
+		out []byte
+		err error
+	}{
+		`bd dep list bd-42 --json`: {out: []byte(`[]`)},
+	})
+	s := beads.NewBdStore("/city", runner)
+	deps, err := s.DepList("bd-42", "down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 0 {
+		t.Errorf("DepList = %d deps, want 0", len(deps))
+	}
+}

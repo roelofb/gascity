@@ -13,6 +13,7 @@ func TestMemStore(t *testing.T) {
 	beadstest.RunStoreTests(t, factory)
 	beadstest.RunSequentialIDTests(t, factory)
 	beadstest.RunCreationOrderTests(t, factory)
+	beadstest.RunDepTests(t, factory)
 }
 
 func TestMemStoreSetMetadata(t *testing.T) {
@@ -181,5 +182,115 @@ func TestMemStoreMolCookDefaultTitle(t *testing.T) {
 	}
 	if b.Title != "deploy" {
 		t.Errorf("Title = %q, want %q (formula name as default)", b.Title, "deploy")
+	}
+}
+
+// --- DepAdd / DepRemove / DepList ---
+
+func TestMemStoreDepAddAndList(t *testing.T) {
+	s := beads.NewMemStore()
+
+	if err := s.DepAdd("a", "b", "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DepAdd("a", "c", "tracks"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Down: what does "a" depend on?
+	deps, err := s.DepList("a", "down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 2 {
+		t.Fatalf("DepList(a, down) = %d deps, want 2", len(deps))
+	}
+	if deps[0].DependsOnID != "b" || deps[0].Type != "blocks" {
+		t.Errorf("dep[0] = %+v, want {a, b, blocks}", deps[0])
+	}
+	if deps[1].DependsOnID != "c" || deps[1].Type != "tracks" {
+		t.Errorf("dep[1] = %+v, want {a, c, tracks}", deps[1])
+	}
+
+	// Up: what depends on "b"?
+	deps, err = s.DepList("b", "up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 1 {
+		t.Fatalf("DepList(b, up) = %d deps, want 1", len(deps))
+	}
+	if deps[0].IssueID != "a" {
+		t.Errorf("dep.IssueID = %q, want %q", deps[0].IssueID, "a")
+	}
+}
+
+func TestMemStoreDepAddIdempotent(t *testing.T) {
+	s := beads.NewMemStore()
+
+	if err := s.DepAdd("a", "b", "blocks"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DepAdd("a", "b", "blocks"); err != nil {
+		t.Fatal(err)
+	}
+
+	deps, _ := s.DepList("a", "down")
+	if len(deps) != 1 {
+		t.Errorf("DepList after duplicate DepAdd = %d deps, want 1", len(deps))
+	}
+}
+
+func TestMemStoreDepRemove(t *testing.T) {
+	s := beads.NewMemStore()
+
+	_ = s.DepAdd("a", "b", "blocks")
+	_ = s.DepAdd("a", "c", "blocks")
+
+	if err := s.DepRemove("a", "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	deps, _ := s.DepList("a", "down")
+	if len(deps) != 1 {
+		t.Fatalf("DepList after remove = %d deps, want 1", len(deps))
+	}
+	if deps[0].DependsOnID != "c" {
+		t.Errorf("remaining dep = %+v, want depends_on c", deps[0])
+	}
+}
+
+func TestMemStoreDepRemoveNonexistent(t *testing.T) {
+	s := beads.NewMemStore()
+
+	// Removing nonexistent dep is a no-op.
+	if err := s.DepRemove("x", "y"); err != nil {
+		t.Errorf("DepRemove nonexistent should not error: %v", err)
+	}
+}
+
+func TestMemStoreDepListEmpty(t *testing.T) {
+	s := beads.NewMemStore()
+
+	deps, err := s.DepList("nonexistent", "down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 0 {
+		t.Errorf("DepList on empty store = %d deps, want 0", len(deps))
+	}
+}
+
+func TestMemStoreDepListDefaultDirection(t *testing.T) {
+	s := beads.NewMemStore()
+	_ = s.DepAdd("a", "b", "blocks")
+
+	// Empty direction string should default to "down".
+	deps, err := s.DepList("a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 1 {
+		t.Errorf("DepList(a, '') = %d deps, want 1", len(deps))
 	}
 }

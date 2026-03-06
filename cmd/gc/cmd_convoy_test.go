@@ -620,3 +620,260 @@ func TestConvoyAutoclosePartialSiblings(t *testing.T) {
 		t.Errorf("convoy Status = %q, want %q (partial siblings)", b.Status, "open")
 	}
 }
+
+// --- gc convoy land ---
+
+func TestConvoyLandHappyPath(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "batch", Type: "convoy", Labels: []string{"owned"}}) // gc-1
+	_, _ = store.Create(beads.Bead{Title: "task A", ParentID: "gc-1"})                         // gc-2
+	_, _ = store.Create(beads.Bead{Title: "task B", ParentID: "gc-1"})                         // gc-3
+	_ = store.Close("gc-2")
+	_ = store.Close("gc-3")
+
+	var stdout, stderr bytes.Buffer
+	code := doConvoyLand(store, events.Discard, []string{"gc-1"}, landOpts{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doConvoyLand = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `Landed convoy gc-1 "batch"`) {
+		t.Errorf("stdout = %q, want land confirmation", stdout.String())
+	}
+
+	b, err := store.Get("gc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Status != "closed" {
+		t.Errorf("convoy Status = %q, want %q", b.Status, "closed")
+	}
+}
+
+func TestConvoyLandForceWithOpenIssues(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "batch", Type: "convoy", Labels: []string{"owned"}}) // gc-1
+	_, _ = store.Create(beads.Bead{Title: "task A", ParentID: "gc-1"})                         // gc-2 (open)
+
+	var stdout, stderr bytes.Buffer
+	code := doConvoyLand(store, events.Discard, []string{"gc-1"}, landOpts{Force: true}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doConvoyLand = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Landed convoy gc-1") {
+		t.Errorf("stdout = %q, want land confirmation", stdout.String())
+	}
+
+	b, _ := store.Get("gc-1")
+	if b.Status != "closed" {
+		t.Errorf("convoy Status = %q, want %q", b.Status, "closed")
+	}
+}
+
+func TestConvoyLandOpenChildrenError(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "batch", Type: "convoy", Labels: []string{"owned"}}) // gc-1
+	_, _ = store.Create(beads.Bead{Title: "task A", ParentID: "gc-1"})                         // gc-2 (open)
+
+	var stdout, stderr bytes.Buffer
+	code := doConvoyLand(store, events.Discard, []string{"gc-1"}, landOpts{}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("doConvoyLand = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "1 open child") {
+		t.Errorf("stderr = %q, want open children error", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--force") {
+		t.Errorf("stderr = %q, want --force hint", stderr.String())
+	}
+}
+
+func TestConvoyLandDryRun(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "batch", Type: "convoy", Labels: []string{"owned"}}) // gc-1
+	_, _ = store.Create(beads.Bead{Title: "task A", ParentID: "gc-1"})                         // gc-2
+	_ = store.Close("gc-2")
+
+	var stdout, stderr bytes.Buffer
+	code := doConvoyLand(store, events.Discard, []string{"gc-1"}, landOpts{DryRun: true}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doConvoyLand = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Would land convoy gc-1") {
+		t.Errorf("stdout = %q, want dry-run preview", stdout.String())
+	}
+
+	// Should NOT actually close the convoy.
+	b, _ := store.Get("gc-1")
+	if b.Status != "open" {
+		t.Errorf("convoy Status = %q, want %q (dry-run should not close)", b.Status, "open")
+	}
+}
+
+func TestConvoyLandNotOwned(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "batch", Type: "convoy"}) // gc-1 (no "owned" label)
+
+	var stderr bytes.Buffer
+	code := doConvoyLand(store, events.Discard, []string{"gc-1"}, landOpts{}, &bytes.Buffer{}, &stderr)
+	if code != 1 {
+		t.Errorf("doConvoyLand = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "not owned") {
+		t.Errorf("stderr = %q, want 'not owned' error", stderr.String())
+	}
+}
+
+func TestConvoyLandAlreadyClosed(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "batch", Type: "convoy", Labels: []string{"owned"}}) // gc-1
+	_ = store.Close("gc-1")
+
+	var stdout bytes.Buffer
+	code := doConvoyLand(store, events.Discard, []string{"gc-1"}, landOpts{}, &stdout, &bytes.Buffer{})
+	if code != 0 {
+		t.Fatalf("doConvoyLand = %d, want 0 (idempotent)", code)
+	}
+	if !strings.Contains(stdout.String(), "already closed") {
+		t.Errorf("stdout = %q, want 'already closed' message", stdout.String())
+	}
+}
+
+func TestConvoyLandMissingID(t *testing.T) {
+	store := beads.NewMemStore()
+
+	var stderr bytes.Buffer
+	code := doConvoyLand(store, events.Discard, nil, landOpts{}, &bytes.Buffer{}, &stderr)
+	if code != 1 {
+		t.Errorf("doConvoyLand = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "missing convoy ID") {
+		t.Errorf("stderr = %q, want missing ID error", stderr.String())
+	}
+}
+
+func TestConvoyLandNotConvoy(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "just a task"}) // gc-1
+
+	var stderr bytes.Buffer
+	code := doConvoyLand(store, events.Discard, []string{"gc-1"}, landOpts{}, &bytes.Buffer{}, &stderr)
+	if code != 1 {
+		t.Errorf("doConvoyLand = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "not a convoy") {
+		t.Errorf("stderr = %q, want 'not a convoy'", stderr.String())
+	}
+}
+
+// --- ConvoyFields ---
+
+func TestConvoyFieldsRoundTrip(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "batch", Type: "convoy"}) // gc-1
+
+	fields := ConvoyFields{
+		Owner:    "mayor",
+		Notify:   "mayor",
+		Molecule: "mol-1",
+		Merge:    "mr",
+	}
+
+	if err := setConvoyFields(store, "gc-1", fields); err != nil {
+		t.Fatalf("setConvoyFields: %v", err)
+	}
+
+	// Read back.
+	b, err := store.Get("gc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := getConvoyFields(b)
+	if got != fields {
+		t.Errorf("getConvoyFields = %+v, want %+v", got, fields)
+	}
+}
+
+func TestConvoyFieldsPartial(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "batch", Type: "convoy"}) // gc-1
+
+	fields := ConvoyFields{Owner: "mayor"}
+	if err := setConvoyFields(store, "gc-1", fields); err != nil {
+		t.Fatalf("setConvoyFields: %v", err)
+	}
+
+	b, _ := store.Get("gc-1")
+	got := getConvoyFields(b)
+	if got.Owner != "mayor" {
+		t.Errorf("Owner = %q, want %q", got.Owner, "mayor")
+	}
+	if got.Notify != "" {
+		t.Errorf("Notify = %q, want empty", got.Notify)
+	}
+}
+
+func TestConvoyFieldsEmpty(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "batch", Type: "convoy"}) // gc-1
+
+	// Set empty fields — should be a no-op.
+	if err := setConvoyFields(store, "gc-1", ConvoyFields{}); err != nil {
+		t.Fatalf("setConvoyFields: %v", err)
+	}
+
+	b, _ := store.Get("gc-1")
+	got := getConvoyFields(b)
+	if got != (ConvoyFields{}) {
+		t.Errorf("getConvoyFields = %+v, want empty", got)
+	}
+}
+
+func TestConvoyFieldsNotFound(t *testing.T) {
+	store := beads.NewMemStore()
+	err := setConvoyFields(store, "gc-999", ConvoyFields{Owner: "mayor"})
+	if err == nil {
+		t.Error("setConvoyFields on nonexistent bead should return error")
+	}
+}
+
+func TestConvoyCreateWithFields(t *testing.T) {
+	store := beads.NewMemStore()
+	fields := ConvoyFields{Owner: "mayor", Merge: "mr"}
+
+	var stdout, stderr bytes.Buffer
+	code := doConvoyCreateWith(store, events.Discard, []string{"deploy"}, fields, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doConvoyCreateWith = %d, want 0; stderr: %s", code, stderr.String())
+	}
+
+	b, err := store.Get("gc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := getConvoyFields(b)
+	if got.Owner != "mayor" {
+		t.Errorf("Owner = %q, want %q", got.Owner, "mayor")
+	}
+	if got.Merge != "mr" {
+		t.Errorf("Merge = %q, want %q", got.Merge, "mr")
+	}
+}
+
+func TestConvoyLandWithNotify(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{
+		Title:    "batch",
+		Type:     "convoy",
+		Labels:   []string{"owned"},
+		Metadata: map[string]string{"convoy.notify": "mayor"},
+	}) // gc-1
+
+	var stdout bytes.Buffer
+	code := doConvoyLand(store, events.Discard, []string{"gc-1"}, landOpts{Force: true}, &stdout, &bytes.Buffer{})
+	if code != 0 {
+		t.Fatalf("doConvoyLand = %d, want 0", code)
+	}
+	if !strings.Contains(stdout.String(), "notify: mayor") {
+		t.Errorf("stdout = %q, want notify message", stdout.String())
+	}
+}

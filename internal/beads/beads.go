@@ -13,18 +13,19 @@ var ErrNotFound = errors.New("bead not found")
 // Bead is a single unit of work in Gas City. Everything is a bead: tasks,
 // mail, molecules, convoys.
 type Bead struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Status      string    `json:"status"` // "open", "in_progress", "closed"
-	Type        string    `json:"type"`   // "task" default
-	CreatedAt   time.Time `json:"created_at"`
-	Assignee    string    `json:"assignee,omitempty"`
-	From        string    `json:"from,omitempty"`
-	ParentID    string    `json:"parent_id,omitempty"`   // step → molecule
-	Ref         string    `json:"ref,omitempty"`         // formula step ID or formula name
-	Needs       []string  `json:"needs,omitempty"`       // dependency step refs
-	Description string    `json:"description,omitempty"` // step instructions
-	Labels      []string  `json:"labels,omitempty"`
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	Status      string            `json:"status"` // "open", "in_progress", "closed"
+	Type        string            `json:"type"`   // "task" default
+	CreatedAt   time.Time         `json:"created_at"`
+	Assignee    string            `json:"assignee,omitempty"`
+	From        string            `json:"from,omitempty"`
+	ParentID    string            `json:"parent_id,omitempty"`   // step → molecule
+	Ref         string            `json:"ref,omitempty"`         // formula step ID or formula name
+	Needs       []string          `json:"needs,omitempty"`       // dependency step refs
+	Description string            `json:"description,omitempty"` // step instructions
+	Labels      []string          `json:"labels,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
 // UpdateOpts specifies which fields to change. Nil pointers are skipped.
@@ -60,6 +61,15 @@ var moleculeTypes = map[string]bool{
 // or wisp attached to a parent bead.
 func IsMoleculeType(t string) bool {
 	return moleculeTypes[t]
+}
+
+// Dep represents a dependency relationship between two beads. The IssueID
+// depends on (is blocked by) DependsOnID. Type describes the relationship
+// kind (e.g. "blocks", "tracks", "relates-to").
+type Dep struct {
+	IssueID     string `json:"issue_id"`
+	DependsOnID string `json:"depends_on_id"`
+	Type        string `json:"type"` // "blocks", "tracks", "relates-to", etc.
 }
 
 // Store is the interface for bead persistence. Implementations must assign
@@ -113,4 +123,17 @@ type Store interface {
 	// MolCookOn instantiates an ephemeral molecule from a formula attached
 	// to an existing bead, and returns the wisp root bead ID.
 	MolCookOn(formula, beadID, title string, vars []string) (string, error)
+
+	// DepAdd records a dependency: issueID depends on (is blocked by)
+	// dependsOnID. The depType describes the relationship ("blocks",
+	// "tracks", "relates-to", etc.).
+	DepAdd(issueID, dependsOnID, depType string) error
+
+	// DepRemove removes a dependency between two beads.
+	DepRemove(issueID, dependsOnID string) error
+
+	// DepList returns dependencies for a bead. Direction controls the
+	// query: "down" returns what this bead depends on (default),
+	// "up" returns what depends on this bead.
+	DepList(id, direction string) ([]Dep, error)
 }

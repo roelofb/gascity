@@ -2,6 +2,8 @@ package beads
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -12,6 +14,7 @@ import (
 type MemStore struct {
 	mu    sync.Mutex
 	beads []Bead
+	deps  []Dep
 	seq   int
 }
 
@@ -20,20 +23,36 @@ func NewMemStore() *MemStore {
 	return &MemStore{}
 }
 
-// NewMemStoreFrom returns a MemStore seeded with existing beads and sequence
-// counter. Used by FileStore to restore state from disk.
-func NewMemStoreFrom(seq int, existing []Bead) *MemStore {
+// NewMemStoreFrom returns a MemStore seeded with existing beads, deps, and
+// sequence counter. Used by FileStore to restore state from disk.
+func NewMemStoreFrom(seq int, existing []Bead, deps []Dep) *MemStore {
 	b := make([]Bead, len(existing))
 	copy(b, existing)
-	return &MemStore{seq: seq, beads: b}
+	d := make([]Dep, len(deps))
+	copy(d, deps)
+	return &MemStore{seq: seq, beads: b, deps: d}
 }
 
-// snapshot returns the current sequence counter and a copy of all beads.
-// Used by FileStore for serialization. Caller must hold m.mu.
-func (m *MemStore) snapshot() (int, []Bead) {
+// snapshot returns the current sequence counter, a deep copy of all beads, and
+// a copy of all deps. Used by FileStore for serialization. Caller must hold m.mu.
+func (m *MemStore) snapshot() (int, []Bead, []Dep) {
 	b := make([]Bead, len(m.beads))
-	copy(b, m.beads)
-	return m.seq, b
+	for i, bead := range m.beads {
+		b[i] = cloneBead(bead)
+	}
+	d := make([]Dep, len(m.deps))
+	copy(d, m.deps)
+	return m.seq, b, d
+}
+
+// cloneBead returns a deep copy of a bead, cloning reference fields
+// (Metadata, Labels, Needs) to prevent shared-state races between callers
+// and the store.
+func cloneBead(b Bead) Bead {
+	b.Metadata = maps.Clone(b.Metadata)
+	b.Labels = slices.Clone(b.Labels)
+	b.Needs = slices.Clone(b.Needs)
+	return b
 }
 
 // Create persists a new bead in memory with a sequential ID.
@@ -49,8 +68,9 @@ func (m *MemStore) Create(b Bead) (Bead, error) {
 	}
 	b.CreatedAt = time.Now()
 
-	m.beads = append(m.beads, b)
-	return b, nil
+	stored := cloneBead(b)
+	m.beads = append(m.beads, stored)
+	return cloneBead(stored), nil
 }
 
 // Update modifies fields of an existing bead. Only non-nil fields in opts
@@ -110,7 +130,9 @@ func (m *MemStore) List() ([]Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := make([]Bead, len(m.beads))
-	copy(result, m.beads)
+	for i, b := range m.beads {
+		result[i] = cloneBead(b)
+	}
 	return result, nil
 }
 
@@ -121,7 +143,7 @@ func (m *MemStore) Ready() ([]Bead, error) {
 	var result []Bead
 	for _, b := range m.beads {
 		if b.Status == "open" {
-			result = append(result, b)
+			result = append(result, cloneBead(b))
 		}
 	}
 	return result, nil
@@ -135,7 +157,7 @@ func (m *MemStore) Get(id string) (Bead, error) {
 
 	for _, b := range m.beads {
 		if b.ID == id {
-			return b, nil
+			return cloneBead(b), nil
 		}
 	}
 	return Bead{}, fmt.Errorf("getting bead %q: %w", id, ErrNotFound)
@@ -150,7 +172,7 @@ func (m *MemStore) Children(parentID string) ([]Bead, error) {
 	var result []Bead
 	for _, b := range m.beads {
 		if b.ParentID == parentID {
-			result = append(result, b)
+			result = append(result, cloneBead(b))
 		}
 	}
 	return result, nil
@@ -167,7 +189,7 @@ func (m *MemStore) ListByLabel(label string, limit int) ([]Bead, error) {
 	for i := len(m.beads) - 1; i >= 0; i-- {
 		for _, l := range m.beads[i].Labels {
 			if l == label {
-				result = append(result, m.beads[i])
+				result = append(result, cloneBead(m.beads[i]))
 				if limit > 0 && len(result) >= limit {
 					return result, nil
 				}
@@ -179,14 +201,16 @@ func (m *MemStore) ListByLabel(label string, limit int) ([]Bead, error) {
 }
 
 // SetMetadata sets a key-value metadata pair on a bead. Returns a wrapped
-// ErrNotFound if the bead does not exist. MemStore has no metadata storage,
-// so this is a no-op for existing beads — callers that need to verify metadata
-// values use BdStore or a recording wrapper.
-func (m *MemStore) SetMetadata(id, _, _ string) error {
+// ErrNotFound if the bead does not exist.
+func (m *MemStore) SetMetadata(id, key, value string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, b := range m.beads {
+	for i, b := range m.beads {
 		if b.ID == id {
+			if b.Metadata == nil {
+				m.beads[i].Metadata = make(map[string]string)
+			}
+			m.beads[i].Metadata[key] = value
 			return nil
 		}
 	}
@@ -226,4 +250,56 @@ func (m *MemStore) MolCookOn(formula, beadID, title string, _ []string) (string,
 		return "", fmt.Errorf("mol cook --on %q: %w", formula, err)
 	}
 	return b.ID, nil
+}
+
+// DepAdd records a dependency: issueID depends on dependsOnID.
+func (m *MemStore) DepAdd(issueID, dependsOnID, depType string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, d := range m.deps {
+		if d.IssueID == issueID && d.DependsOnID == dependsOnID {
+			m.deps[i].Type = depType // update type on re-add
+			return nil
+		}
+	}
+	m.deps = append(m.deps, Dep{
+		IssueID:     issueID,
+		DependsOnID: dependsOnID,
+		Type:        depType,
+	})
+	return nil
+}
+
+// DepRemove removes a dependency between two beads.
+func (m *MemStore) DepRemove(issueID, dependsOnID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, d := range m.deps {
+		if d.IssueID == issueID && d.DependsOnID == dependsOnID {
+			m.deps = append(m.deps[:i], m.deps[i+1:]...)
+			return nil
+		}
+	}
+	return nil // removing nonexistent dep is a no-op
+}
+
+// DepList returns dependencies for a bead. Direction "down" (default)
+// returns what this bead depends on; "up" returns what depends on this bead.
+func (m *MemStore) DepList(id, direction string) ([]Dep, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []Dep
+	for _, d := range m.deps {
+		switch direction {
+		case "up":
+			if d.DependsOnID == id {
+				result = append(result, d)
+			}
+		default: // "down" or empty
+			if d.IssueID == id {
+				result = append(result, d)
+			}
+		}
+	}
+	return result, nil
 }

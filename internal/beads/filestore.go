@@ -14,6 +14,7 @@ import (
 type fileData struct {
 	Seq   int    `json:"seq"`
 	Beads []Bead `json:"beads"`
+	Deps  []Dep  `json:"deps,omitempty"`
 }
 
 // FileStore is a file-backed Store implementation. It embeds a MemStore for
@@ -47,7 +48,7 @@ func OpenFileStore(fs fsys.FS, path string) (*FileStore, error) {
 	if err := json.Unmarshal(data, &fd); err != nil {
 		return nil, fmt.Errorf("opening file store: %w", err)
 	}
-	return &FileStore{MemStore: NewMemStoreFrom(fd.Seq, fd.Beads), fs: fs, path: path}, nil
+	return &FileStore{MemStore: NewMemStoreFrom(fd.Seq, fd.Beads, fd.Deps), fs: fs, path: path}, nil
 }
 
 // Create delegates to MemStore.Create and flushes to disk.
@@ -112,14 +113,44 @@ func (fs *FileStore) MolCookOn(formula, beadID, title string, vars []string) (st
 	return id, nil
 }
 
+// SetMetadata delegates to MemStore.SetMetadata and flushes to disk.
+func (fs *FileStore) SetMetadata(id, key, value string) error {
+	fs.fmu.Lock()
+	defer fs.fmu.Unlock()
+	if err := fs.MemStore.SetMetadata(id, key, value); err != nil {
+		return err
+	}
+	return fs.save()
+}
+
+// DepAdd delegates to MemStore.DepAdd and flushes to disk.
+func (fs *FileStore) DepAdd(issueID, dependsOnID, depType string) error {
+	fs.fmu.Lock()
+	defer fs.fmu.Unlock()
+	if err := fs.MemStore.DepAdd(issueID, dependsOnID, depType); err != nil {
+		return err
+	}
+	return fs.save()
+}
+
+// DepRemove delegates to MemStore.DepRemove and flushes to disk.
+func (fs *FileStore) DepRemove(issueID, dependsOnID string) error {
+	fs.fmu.Lock()
+	defer fs.fmu.Unlock()
+	if err := fs.MemStore.DepRemove(issueID, dependsOnID); err != nil {
+		return err
+	}
+	return fs.save()
+}
+
 // save writes the full store state to disk atomically (temp file + rename).
 // Called with fmu held, so snapshot under MemStore.mu then release before I/O.
 func (fs *FileStore) save() error {
 	fs.mu.Lock()
-	seq, beads := fs.snapshot()
+	seq, beads, deps := fs.snapshot()
 	fs.mu.Unlock()
 
-	fd := fileData{Seq: seq, Beads: beads}
+	fd := fileData{Seq: seq, Beads: beads, Deps: deps}
 	data, err := json.MarshalIndent(fd, "", "  ")
 	if err != nil {
 		return fmt.Errorf("saving file store: %w", err)

@@ -136,6 +136,7 @@ func (w *beadWire) toBead() beads.Bead {
 		Needs:       w.Needs,
 		Description: w.Description,
 		Labels:      w.Labels,
+		Metadata:    w.Metadata,
 	}
 }
 
@@ -291,6 +292,40 @@ func (s *Store) MolCookOn(formulaName, beadID, title string, vars []string) (str
 		return "", fmt.Errorf("exec beads mol-cook-on produced empty output")
 	}
 	return rootID, nil
+}
+
+// DepAdd delegates dependency creation to the script's dep-add operation.
+func (s *Store) DepAdd(issueID, dependsOnID, depType string) error {
+	_, err := s.run(nil, "dep-add", issueID, dependsOnID, depType)
+	if err != nil {
+		return fmt.Errorf("adding dep %s→%s: %w", issueID, dependsOnID, err)
+	}
+	return nil
+}
+
+// DepRemove delegates dependency removal to the script's dep-remove operation.
+func (s *Store) DepRemove(issueID, dependsOnID string) error {
+	_, err := s.run(nil, "dep-remove", issueID, dependsOnID)
+	if err != nil {
+		return fmt.Errorf("removing dep %s→%s: %w", issueID, dependsOnID, err)
+	}
+	return nil
+}
+
+// DepList delegates dependency listing to the script's dep-list operation.
+func (s *Store) DepList(id, direction string) ([]beads.Dep, error) {
+	out, err := s.run(nil, "dep-list", id, direction)
+	if err != nil {
+		return nil, fmt.Errorf("listing deps for %q: %w", id, err)
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	var deps []beads.Dep
+	if err := json.Unmarshal([]byte(out), &deps); err != nil {
+		return nil, fmt.Errorf("exec beads dep-list: parsing JSON: %w", err)
+	}
+	return deps, nil
 }
 
 // Compile-time interface check.

@@ -264,18 +264,19 @@ func envWithout(environ []string, key string) []string {
 // bdIssue is the JSON shape returned by bd CLI commands. We decode only the
 // fields Gas City cares about; all others are silently ignored.
 type bdIssue struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Status      string    `json:"status"`
-	IssueType   string    `json:"issue_type"`
-	CreatedAt   time.Time `json:"created_at"`
-	Assignee    string    `json:"assignee"`
-	From        string    `json:"from"`
-	ParentID    string    `json:"parent_id"`
-	Ref         string    `json:"ref"`
-	Needs       []string  `json:"needs"`
-	Description string    `json:"description"`
-	Labels      []string  `json:"labels"`
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	Status      string            `json:"status"`
+	IssueType   string            `json:"issue_type"`
+	CreatedAt   time.Time         `json:"created_at"`
+	Assignee    string            `json:"assignee"`
+	From        string            `json:"from"`
+	ParentID    string            `json:"parent_id"`
+	Ref         string            `json:"ref"`
+	Needs       []string          `json:"needs"`
+	Description string            `json:"description"`
+	Labels      []string          `json:"labels"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
 // toBead converts a bdIssue to a Gas City Bead. CreatedAt is truncated to
@@ -295,6 +296,7 @@ func (b *bdIssue) toBead() Bead {
 		Needs:       b.Needs,
 		Description: b.Description,
 		Labels:      b.Labels,
+		Metadata:    b.Metadata,
 	}
 }
 
@@ -491,6 +493,71 @@ func (s *BdStore) Ready() ([]Bead, error) {
 	result := make([]Bead, len(issues))
 	for i := range issues {
 		result[i] = issues[i].toBead()
+	}
+	return result, nil
+}
+
+// DepAdd records a dependency via bd dep add.
+func (s *BdStore) DepAdd(issueID, dependsOnID, depType string) error {
+	_, err := s.runner(s.dir, "bd", "dep", "add", issueID, dependsOnID, "--type", depType)
+	if err != nil {
+		return fmt.Errorf("adding dep %s→%s: %w", issueID, dependsOnID, err)
+	}
+	return nil
+}
+
+// DepRemove removes a dependency via bd dep remove.
+func (s *BdStore) DepRemove(issueID, dependsOnID string) error {
+	_, err := s.runner(s.dir, "bd", "dep", "remove", issueID, dependsOnID)
+	if err != nil {
+		return fmt.Errorf("removing dep %s→%s: %w", issueID, dependsOnID, err)
+	}
+	return nil
+}
+
+// bdDepIssue is the JSON shape returned by bd dep list --json.
+// It's a bdIssue with an added dependency_type field.
+type bdDepIssue struct {
+	bdIssue
+	DepType string `json:"dependency_type"`
+}
+
+// DepList returns dependencies via bd dep list --json.
+func (s *BdStore) DepList(id, direction string) ([]Dep, error) {
+	args := []string{"dep", "list", id, "--json"}
+	if direction == "up" {
+		args = append(args, "--direction=up")
+	}
+	out, err := s.runner(s.dir, "bd", args...)
+	if err != nil {
+		// Empty dep list may return error on some bd versions.
+		if isBdNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing deps for %q: %w", id, err)
+	}
+	extracted := extractJSON(out)
+	if len(extracted) == 0 || string(extracted) == "[]" {
+		return nil, nil
+	}
+	var depIssues []bdDepIssue
+	if err := json.Unmarshal(extracted, &depIssues); err != nil {
+		return nil, fmt.Errorf("bd dep list: parsing JSON: %w", err)
+	}
+	result := make([]Dep, len(depIssues))
+	for i, di := range depIssues {
+		depType := di.DepType
+		if depType == "" {
+			depType = "blocks"
+		}
+		switch direction {
+		case "up":
+			// "up" query on id: returned issues depend on id.
+			result[i] = Dep{IssueID: di.ID, DependsOnID: id, Type: depType}
+		default:
+			// "down" query on id: id depends on returned issues.
+			result[i] = Dep{IssueID: id, DependsOnID: di.ID, Type: depType}
+		}
 	}
 	return result, nil
 }

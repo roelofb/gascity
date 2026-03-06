@@ -1294,7 +1294,7 @@ func TestOnFormulaAutoBurnStaleMolecule(t *testing.T) {
 	// Seed store with MOL-1 so Close can find it by ID.
 	deps.Store = beads.NewMemStoreFrom(0, []beads.Bead{
 		{ID: "MOL-1", Type: "molecule", Status: "open"},
-	})
+	}, nil)
 
 	opts := testOpts(a, "BL-42")
 	opts.OnFormula = "code-review"
@@ -1505,7 +1505,7 @@ func TestBatchAutoBurnStaleMolecules(t *testing.T) {
 	// Seed store with MOL-1 so Close can find it by ID.
 	deps.Store = beads.NewMemStoreFrom(0, []beads.Bead{
 		{ID: "MOL-1", Type: "molecule", Status: "open"},
-	})
+	}, nil)
 
 	opts := testOpts(a, "CVY-1")
 	opts.OnFormula = "code-review"

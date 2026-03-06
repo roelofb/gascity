@@ -42,18 +42,19 @@ type molCookRequest struct {
 // beadWire is the JSON wire format returned by the script for bead data.
 // Matches [beads.Bead] JSON tags — the same shape that bd already produces.
 type beadWire struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Status      string    `json:"status"`
-	Type        string    `json:"type"`
-	CreatedAt   time.Time `json:"created_at"`
-	Assignee    string    `json:"assignee"`
-	From        string    `json:"from"`
-	ParentID    string    `json:"parent_id"`
-	Ref         string    `json:"ref"`
-	Needs       []string  `json:"needs"`
-	Description string    `json:"description"`
-	Labels      []string  `json:"labels"`
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	Status      string            `json:"status"`
+	Type        string            `json:"type"`
+	CreatedAt   time.Time         `json:"created_at"`
+	Assignee    string            `json:"assignee"`
+	From        string            `json:"from"`
+	ParentID    string            `json:"parent_id"`
+	Ref         string            `json:"ref"`
+	Needs       []string          `json:"needs"`
+	Description string            `json:"description"`
+	Labels      []string          `json:"labels"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
 // marshalCreate converts a Bead to JSON for the exec script's create operation.

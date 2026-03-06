@@ -610,6 +610,110 @@ func RunCreationOrderTests(t *testing.T, newStore func() beads.Store) {
 	})
 }
 
+// RunDepTests runs conformance tests for dependency operations.
+func RunDepTests(t *testing.T, newStore func() beads.Store) {
+	t.Helper()
+
+	t.Run("DepAddAndListDown", func(t *testing.T) {
+		s := newStore()
+		if err := s.DepAdd("a", "b", "blocks"); err != nil {
+			t.Fatal(err)
+		}
+		deps, err := s.DepList("a", "down")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(deps) != 1 {
+			t.Fatalf("DepList(a, down) = %d deps, want 1", len(deps))
+		}
+		if deps[0].DependsOnID != "b" {
+			t.Errorf("dep.DependsOnID = %q, want %q", deps[0].DependsOnID, "b")
+		}
+	})
+
+	t.Run("DepAddIdempotent", func(t *testing.T) {
+		s := newStore()
+		if err := s.DepAdd("a", "b", "blocks"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DepAdd("a", "b", "blocks"); err != nil {
+			t.Fatal(err)
+		}
+		deps, _ := s.DepList("a", "down")
+		if len(deps) != 1 {
+			t.Errorf("DepList after duplicate DepAdd = %d deps, want 1", len(deps))
+		}
+	})
+
+	t.Run("DepAddUpdatesType", func(t *testing.T) {
+		s := newStore()
+		if err := s.DepAdd("a", "b", "blocks"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DepAdd("a", "b", "tracks"); err != nil {
+			t.Fatal(err)
+		}
+		deps, _ := s.DepList("a", "down")
+		if len(deps) != 1 {
+			t.Fatalf("DepList after type update = %d deps, want 1", len(deps))
+		}
+		if deps[0].Type != "tracks" {
+			t.Errorf("dep.Type = %q, want %q", deps[0].Type, "tracks")
+		}
+	})
+
+	t.Run("DepListUp", func(t *testing.T) {
+		s := newStore()
+		if err := s.DepAdd("a", "b", "blocks"); err != nil {
+			t.Fatal(err)
+		}
+		deps, err := s.DepList("b", "up")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(deps) != 1 {
+			t.Fatalf("DepList(b, up) = %d deps, want 1", len(deps))
+		}
+		if deps[0].IssueID != "a" {
+			t.Errorf("dep.IssueID = %q, want %q", deps[0].IssueID, "a")
+		}
+	})
+
+	t.Run("DepRemove", func(t *testing.T) {
+		s := newStore()
+		_ = s.DepAdd("a", "b", "blocks")
+		_ = s.DepAdd("a", "c", "blocks")
+		if err := s.DepRemove("a", "b"); err != nil {
+			t.Fatal(err)
+		}
+		deps, _ := s.DepList("a", "down")
+		if len(deps) != 1 {
+			t.Fatalf("DepList after remove = %d deps, want 1", len(deps))
+		}
+		if deps[0].DependsOnID != "c" {
+			t.Errorf("remaining dep = %q, want %q", deps[0].DependsOnID, "c")
+		}
+	})
+
+	t.Run("DepRemoveNonexistent", func(t *testing.T) {
+		s := newStore()
+		if err := s.DepRemove("x", "y"); err != nil {
+			t.Errorf("DepRemove nonexistent should not error: %v", err)
+		}
+	})
+
+	t.Run("DepListEmpty", func(t *testing.T) {
+		s := newStore()
+		deps, err := s.DepList("nonexistent", "down")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(deps) != 0 {
+			t.Errorf("DepList on empty store = %d deps, want 0", len(deps))
+		}
+	})
+}
+
 // titlesOf extracts titles from a slice of beads.
 func titlesOf(bs []beads.Bead) []string {
 	titles := make([]string, len(bs))
