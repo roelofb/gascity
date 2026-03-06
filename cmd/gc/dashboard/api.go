@@ -200,6 +200,8 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleSSE(w, r)
 	case path == "/session/preview" && r.Method == http.MethodGet:
 		h.handleSessionPreview(w, r)
+	case strings.HasPrefix(path, "/agent/logs") && r.Method == http.MethodGet:
+		h.handleAgentLogs(w, r)
 	default:
 		http.Error(w, "Not found", http.StatusNotFound)
 	}
@@ -1608,6 +1610,45 @@ func (h *APIHandler) handleSessionPreview(w http.ResponseWriter, r *http.Request
 		Content:   string(body),
 		Timestamp: time.Now().Format(time.RFC3339),
 	})
+}
+
+// ---------- Agent logs handler ----------
+
+// handleAgentLogs proxies the API server's /v0/agent/{name}/logs endpoint.
+func (h *APIHandler) handleAgentLogs(w http.ResponseWriter, r *http.Request) {
+	agentName := r.URL.Query().Get("name")
+	if agentName == "" {
+		h.sendError(w, "Missing name parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Validate agent name characters.
+	for _, c := range agentName {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' && c != '/' {
+			h.sendError(w, "Invalid agent name", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Build upstream URL with query params.
+	upstream := "/v0/agent/" + agentName + "/logs"
+	sep := "?"
+	if v := r.URL.Query().Get("tail"); v != "" {
+		upstream += sep + "tail=" + v
+		sep = "&"
+	}
+	if v := r.URL.Query().Get("before"); v != "" {
+		upstream += sep + "before=" + v
+	}
+
+	body, err := h.apiGet(upstream)
+	if err != nil {
+		h.sendError(w, "Failed to fetch agent logs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(body)
 }
 
 // ---------- Command parsing ----------

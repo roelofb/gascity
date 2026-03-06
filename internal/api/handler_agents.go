@@ -115,9 +115,13 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	// This prevents agent names ending in "/peek" from being misrouted.
 	agentCfg, ok := findAgent(cfg, name)
 	if !ok {
-		// Not found as exact agent — check for /peek sub-resource.
+		// Not found as exact agent — check for sub-resource suffixes.
 		if after, found := strings.CutSuffix(name, "/peek"); found {
 			s.handleAgentPeek(w, r, after)
+			return
+		}
+		if after, found := strings.CutSuffix(name, "/logs"); found {
+			s.handleAgentLogs(w, r, after)
 			return
 		}
 		writeError(w, http.StatusNotFound, "not_found", "agent "+name+" not found")

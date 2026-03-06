@@ -12,6 +12,10 @@ type Server struct {
 	mux      *http.ServeMux
 	server   *http.Server
 	readOnly bool // when true, POST endpoints return 403
+
+	// sessionLogSearchPaths overrides the default search paths for Claude
+	// session JSONL files. Nil means use sessionlog.DefaultSearchPaths().
+	sessionLogSearchPaths []string
 }
 
 // New creates a Server with all routes registered. Does not start listening.
