@@ -62,11 +62,45 @@ type State interface {
 type StateMutator interface {
 	State
 
+	// --- Desired-state mutations (write to city.toml) ---
+
 	// SuspendAgent marks an agent as suspended in the config.
 	SuspendAgent(name string) error
 
 	// ResumeAgent marks an agent as no longer suspended.
 	ResumeAgent(name string) error
+
+	// SuspendRig suspends a rig in the config.
+	SuspendRig(name string) error
+
+	// ResumeRig resumes a rig in the config.
+	ResumeRig(name string) error
+
+	// SuspendCity sets workspace.suspended = true.
+	SuspendCity() error
+
+	// ResumeCity sets workspace.suspended = false.
+	ResumeCity() error
+
+	// CreateAgent adds a new agent to city.toml.
+	CreateAgent(a config.Agent) error
+
+	// UpdateAgent replaces an existing agent definition in city.toml.
+	UpdateAgent(name string, a config.Agent) error
+
+	// DeleteAgent removes an agent from city.toml.
+	DeleteAgent(name string) error
+
+	// CreateRig adds a new rig to city.toml.
+	CreateRig(r config.Rig) error
+
+	// UpdateRig partially updates a rig in city.toml.
+	UpdateRig(name string, r config.Rig) error
+
+	// DeleteRig removes a rig from city.toml.
+	DeleteRig(name string) error
+
+	// --- Runtime actions (ephemeral session operations) ---
 
 	// KillAgent force-kills an agent's session (reconciler restarts it).
 	KillAgent(name string) error
@@ -79,10 +113,4 @@ type StateMutator interface {
 
 	// NudgeAgent sends a message to a running agent session.
 	NudgeAgent(name, message string) error
-
-	// SuspendRig suspends all agents in a rig.
-	SuspendRig(name string) error
-
-	// ResumeRig resumes all agents in a rig.
-	ResumeRig(name string) error
 }

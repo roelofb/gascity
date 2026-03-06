@@ -152,3 +152,61 @@ func (f *fakeMutatorState) ResumeRig(name string) error {
 	}
 	return nil
 }
+
+func (f *fakeMutatorState) SuspendCity() error { f.cfg.Workspace.Suspended = true; return nil }
+func (f *fakeMutatorState) ResumeCity() error  { f.cfg.Workspace.Suspended = false; return nil }
+func (f *fakeMutatorState) CreateAgent(a config.Agent) error {
+	f.cfg.Agents = append(f.cfg.Agents, a)
+	return nil
+}
+
+func (f *fakeMutatorState) UpdateAgent(name string, a config.Agent) error {
+	dir, base := config.ParseQualifiedName(name)
+	for i := range f.cfg.Agents {
+		if f.cfg.Agents[i].Dir == dir && f.cfg.Agents[i].Name == base {
+			a.Dir = f.cfg.Agents[i].Dir
+			f.cfg.Agents[i] = a
+			return nil
+		}
+	}
+	return fmt.Errorf("agent %q not found", name)
+}
+
+func (f *fakeMutatorState) DeleteAgent(name string) error {
+	dir, base := config.ParseQualifiedName(name)
+	for i := range f.cfg.Agents {
+		if f.cfg.Agents[i].Dir == dir && f.cfg.Agents[i].Name == base {
+			f.cfg.Agents = append(f.cfg.Agents[:i], f.cfg.Agents[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("agent %q not found", name)
+}
+
+func (f *fakeMutatorState) CreateRig(r config.Rig) error {
+	f.cfg.Rigs = append(f.cfg.Rigs, r)
+	return nil
+}
+
+func (f *fakeMutatorState) UpdateRig(name string, r config.Rig) error {
+	for i := range f.cfg.Rigs {
+		if f.cfg.Rigs[i].Name == name {
+			if r.Path != "" {
+				f.cfg.Rigs[i].Path = r.Path
+			}
+			f.cfg.Rigs[i].Suspended = r.Suspended
+			return nil
+		}
+	}
+	return fmt.Errorf("rig %q not found", name)
+}
+
+func (f *fakeMutatorState) DeleteRig(name string) error {
+	for i := range f.cfg.Rigs {
+		if f.cfg.Rigs[i].Name == name {
+			f.cfg.Rigs = append(f.cfg.Rigs[:i], f.cfg.Rigs[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("rig %q not found", name)
+}

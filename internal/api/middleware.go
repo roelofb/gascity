@@ -37,7 +37,7 @@ func withCORS(next http.Handler) http.Handler {
 		origin := r.Header.Get("Origin")
 		if isLocalhostOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Last-Event-ID, X-GC-Request")
 			w.Header().Set("Access-Control-Expose-Headers", "X-GC-Index")
 		}
@@ -49,11 +49,20 @@ func withCORS(next http.Handler) http.Handler {
 	})
 }
 
-// withReadOnly rejects all POST requests. Used when the API server binds to
-// a non-localhost address where mutations would be unauthenticated.
+// isMutationMethod returns true for HTTP methods that modify state.
+func isMutationMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	}
+	return false
+}
+
+// withReadOnly rejects all mutation requests. Used when the API server binds
+// to a non-localhost address where mutations would be unauthenticated.
 func withReadOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
+		if isMutationMethod(r.Method) {
 			writeError(w, http.StatusForbidden, "read_only", "mutations disabled: server bound to non-localhost address")
 			return
 		}
@@ -61,11 +70,11 @@ func withReadOnly(next http.Handler) http.Handler {
 	})
 }
 
-// withCSRFCheck requires a custom X-GC-Request header on mutation (POST) requests.
+// withCSRFCheck requires a custom X-GC-Request header on mutation requests.
 // Custom headers trigger CORS preflight, preventing simple cross-origin form submissions.
 func withCSRFCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.Header.Get("X-GC-Request") == "" {
+		if isMutationMethod(r.Method) && r.Header.Get("X-GC-Request") == "" {
 			writeError(w, http.StatusForbidden, "csrf", "X-GC-Request header required on mutation endpoints")
 			return
 		}

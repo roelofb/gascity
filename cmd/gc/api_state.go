@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beads"
 	beadsexec "github.com/gastownhall/gascity/internal/beads/exec"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/configedit"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/mail"
@@ -30,6 +30,7 @@ type controllerState struct {
 	beadStores map[string]beads.Store
 	mailProvs  map[string]mail.Provider
 	eventProv  events.Provider
+	editor     *configedit.Editor
 	cityName   string
 	cityPath   string
 	version    string
@@ -44,10 +45,12 @@ func newControllerState(
 	ep events.Provider,
 	cityName, cityPath string,
 ) *controllerState {
+	tomlPath := filepath.Join(cityPath, "city.toml")
 	cs := &controllerState{
 		cfg:       cfg,
 		sp:        sp,
 		eventProv: ep,
+		editor:    configedit.NewEditor(fsys.OSFS{}, tomlPath),
 		cityName:  cityName,
 		cityPath:  cityPath,
 		version:   version,
@@ -241,16 +244,15 @@ func (cs *controllerState) spAndSession(name string) (session.Provider, string) 
 	return sp, agent.SessionNameFor(cs.cityName, name, tmpl)
 }
 
-// SuspendAgent marks an agent as suspended via session metadata.
+// SuspendAgent writes suspended=true to city.toml (durable desired state).
+// Uses configedit.Editor for provenance-aware edit (inline vs patch).
 func (cs *controllerState) SuspendAgent(name string) error {
-	sp, sessionName := cs.spAndSession(name)
-	return sp.SetMeta(sessionName, "suspended", "true")
+	return cs.editor.SuspendAgent(name)
 }
 
-// ResumeAgent removes the suspended flag.
+// ResumeAgent clears suspended in city.toml (durable desired state).
 func (cs *controllerState) ResumeAgent(name string) error {
-	sp, sessionName := cs.spAndSession(name)
-	return sp.RemoveMeta(sessionName, "suspended")
+	return cs.editor.ResumeAgent(name)
 }
 
 // KillAgent force-kills the agent session.
@@ -280,77 +282,52 @@ func (cs *controllerState) NudgeAgent(name, message string) error {
 	return sp.Nudge(sessionName, message)
 }
 
-// SuspendRig suspends all agents (including expanded pool members) in a rig.
+// SuspendRig writes suspended=true on the rig in city.toml.
 func (cs *controllerState) SuspendRig(name string) error {
-	cs.mu.RLock()
-	sp := cs.sp
-	cfg := cs.cfg
-	tmpl := cs.cfg.Workspace.SessionTemplate
-	cs.mu.RUnlock()
-	if !cs.rigExists(cfg, name) {
-		return fmt.Errorf("rig %q not found", name)
-	}
-	var errs []error
-	for _, qn := range cs.expandedAgentNames(cfg, name) {
-		sessionName := agent.SessionNameFor(cs.cityName, qn, tmpl)
-		if err := sp.SetMeta(sessionName, "suspended", "true"); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return cs.editor.SuspendRig(name)
 }
 
-// ResumeRig resumes all agents (including expanded pool members) in a rig.
+// ResumeRig clears suspended on the rig in city.toml.
 func (cs *controllerState) ResumeRig(name string) error {
-	cs.mu.RLock()
-	sp := cs.sp
-	cfg := cs.cfg
-	tmpl := cs.cfg.Workspace.SessionTemplate
-	cs.mu.RUnlock()
-	if !cs.rigExists(cfg, name) {
-		return fmt.Errorf("rig %q not found", name)
-	}
-	var errs []error
-	for _, qn := range cs.expandedAgentNames(cfg, name) {
-		sessionName := agent.SessionNameFor(cs.cityName, qn, tmpl)
-		if err := sp.RemoveMeta(sessionName, "suspended"); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return cs.editor.ResumeRig(name)
 }
 
-// expandedAgentNames returns qualified names for all agents in a rig,
-// expanding pool agents into individual member names (pool-1, pool-2, etc).
-func (cs *controllerState) expandedAgentNames(cfg *config.City, rig string) []string {
-	var names []string
-	for _, a := range cfg.Agents {
-		if a.Dir != rig {
-			continue
-		}
-		if !a.IsPool() {
-			names = append(names, a.QualifiedName())
-			continue
-		}
-		pool := a.EffectivePool()
-		if !pool.IsMultiInstance() {
-			// Single-instance pool: use bare name.
-			names = append(names, a.QualifiedName())
-			continue
-		}
-		// Multi-instance pool: discover instances. For unlimited pools with
-		// no running instances, this returns empty (acceptable for API).
-		names = append(names, discoverPoolInstances(a.Name, a.Dir, pool, cs.cityName, cfg.Workspace.SessionTemplate, cs.sp)...)
-	}
-	return names
+// SuspendCity sets workspace.suspended = true.
+func (cs *controllerState) SuspendCity() error {
+	return cs.editor.SuspendCity()
 }
 
-// rigExists checks if a rig name exists in the config.
-func (cs *controllerState) rigExists(cfg *config.City, name string) bool {
-	for _, r := range cfg.Rigs {
-		if r.Name == name {
-			return true
-		}
-	}
-	return false
+// ResumeCity sets workspace.suspended = false.
+func (cs *controllerState) ResumeCity() error {
+	return cs.editor.ResumeCity()
+}
+
+// CreateAgent adds a new agent to city.toml.
+func (cs *controllerState) CreateAgent(a config.Agent) error {
+	return cs.editor.CreateAgent(a)
+}
+
+// UpdateAgent replaces an existing agent definition in city.toml.
+func (cs *controllerState) UpdateAgent(name string, a config.Agent) error {
+	return cs.editor.UpdateAgent(name, a)
+}
+
+// DeleteAgent removes an agent from city.toml.
+func (cs *controllerState) DeleteAgent(name string) error {
+	return cs.editor.DeleteAgent(name)
+}
+
+// CreateRig adds a new rig to city.toml.
+func (cs *controllerState) CreateRig(r config.Rig) error {
+	return cs.editor.CreateRig(r)
+}
+
+// UpdateRig partially updates a rig in city.toml.
+func (cs *controllerState) UpdateRig(name string, r config.Rig) error {
+	return cs.editor.UpdateRig(name, r)
+}
+
+// DeleteRig removes a rig from city.toml.
+func (cs *controllerState) DeleteRig(name string) error {
+	return cs.editor.DeleteRig(name)
 }

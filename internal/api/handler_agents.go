@@ -282,9 +282,11 @@ func (s *Server) handleAgentAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reject mutations on the pool parent when max > 1.
-	// Runtime sessions are pool-1, pool-2, etc. — mutating the parent is a no-op.
-	if agentCfg.IsPool() {
+	// Reject runtime mutations on pool parents when max > 1.
+	// Runtime sessions are pool-1, pool-2, etc. — kill/drain/nudge the parent is a no-op.
+	// Suspend/resume target desired state in city.toml and correctly apply to the pool definition.
+	isRuntimeAction := action != "suspend" && action != "resume"
+	if isRuntimeAction && agentCfg.IsPool() {
 		pool := agentCfg.EffectivePool()
 		if pool.Max > 1 && name == agentCfg.QualifiedName() {
 			writeError(w, http.StatusBadRequest, "invalid",
@@ -317,6 +319,10 @@ func (s *Server) handleAgentAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}

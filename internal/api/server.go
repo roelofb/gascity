@@ -25,7 +25,7 @@ func New(state State) *Server {
 	return s
 }
 
-// NewReadOnly creates a read-only Server that rejects all mutation (POST) endpoints.
+// NewReadOnly creates a read-only Server that rejects all mutation requests.
 // Use this when the server binds to a non-localhost address.
 func NewReadOnly(state State) *Server {
 	s := &Server{state: state, mux: http.NewServeMux(), readOnly: true}
@@ -77,14 +77,28 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v0/status", s.handleStatus)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 
-	// Agents
+	// City
+	s.mux.HandleFunc("PATCH /v0/city", s.handleCityPatch)
+
+	// Agents — read
 	s.mux.HandleFunc("GET /v0/agents", s.handleAgentList)
 	s.mux.HandleFunc("GET /v0/agent/{name...}", s.handleAgent)
+	// Agents — CRUD
+	s.mux.HandleFunc("POST /v0/agents", s.handleAgentCreate)
+	s.mux.HandleFunc("PUT /v0/agent/{name...}", s.handleAgentUpdate)
+	s.mux.HandleFunc("PATCH /v0/agent/{name...}", s.handleAgentUpdate)
+	s.mux.HandleFunc("DELETE /v0/agent/{name...}", s.handleAgentDelete)
+	// Agents — actions
 	s.mux.HandleFunc("POST /v0/agent/{name...}", s.handleAgentAction)
 
-	// Rigs
+	// Rigs — read
 	s.mux.HandleFunc("GET /v0/rigs", s.handleRigList)
 	s.mux.HandleFunc("GET /v0/rig/{name}", s.handleRig)
+	// Rigs — CRUD
+	s.mux.HandleFunc("POST /v0/rigs", s.handleRigCreate)
+	s.mux.HandleFunc("PATCH /v0/rig/{name}", s.handleRigUpdate)
+	s.mux.HandleFunc("DELETE /v0/rig/{name}", s.handleRigDelete)
+	// Rigs — actions
 	s.mux.HandleFunc("POST /v0/rig/{name}/{action}", s.handleRigAction)
 
 	// Beads
