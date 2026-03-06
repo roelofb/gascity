@@ -133,10 +133,24 @@ func (p *Provider) ProcessAlive(name string, processNames []string) bool {
 }
 
 // Nudge sends a message to the named session to wake or redirect the agent.
+// By default, waits for the agent to be idle before sending (wait-idle mode)
+// to avoid interrupting active tool calls. If the agent doesn't become idle
+// within NudgeIdleTimeout, sends immediately as a fallback.
 // Delegates to [Tmux.NudgeSession] which handles per-session locking,
 // multi-pane resolution, retry with backoff, and SIGWINCH wake.
 // Best-effort: returns nil if the session doesn't exist.
 func (p *Provider) Nudge(name, message string) error {
+	// Wait for the agent to be idle before sending, unless disabled.
+	// This prevents interrupting active tool calls — the prompt is visible
+	// in scrollback during inter-tool-call gaps, so immediate send-keys
+	// would inject text mid-execution. See upstream dfd945e9/6bc898ce.
+	if idleTimeout := p.tm.cfg.NudgeIdleTimeout; idleTimeout > 0 {
+		// Best-effort wait — if it fails (session gone, timeout), proceed
+		// with the nudge anyway. The message may arrive during active work,
+		// but Claude's cooperative queue will handle it at the next turn.
+		_ = p.tm.WaitForIdle(name, idleTimeout)
+	}
+
 	err := p.tm.NudgeSession(name, message)
 	if err != nil && (errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrNoServer)) {
 		return nil

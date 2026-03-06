@@ -39,8 +39,14 @@ type Config struct {
 	NudgeReadyTimeout  time.Duration
 	NudgeRetryInterval time.Duration
 	NudgeLockTimeout   time.Duration
-	DebounceMs         int
-	DisplayMs          int
+	// NudgeIdleTimeout is how long Nudge waits for the agent to become idle
+	// before sending the message. This prevents interrupting active tool calls.
+	// If the agent doesn't become idle within this timeout, the message is
+	// sent anyway (immediate fallback). Set to 0 to disable wait-idle and
+	// always send immediately.
+	NudgeIdleTimeout time.Duration
+	DebounceMs       int
+	DisplayMs        int
 	// SocketName specifies the tmux socket name for per-city isolation.
 	// When set, all tmux commands use "tmux -L <socket>" to connect to
 	// a dedicated server. Empty means use the default tmux server.
@@ -54,6 +60,7 @@ func DefaultConfig() Config {
 		NudgeReadyTimeout:  10 * time.Second,
 		NudgeRetryInterval: 500 * time.Millisecond,
 		NudgeLockTimeout:   30 * time.Second,
+		NudgeIdleTimeout:   30 * time.Second,
 		DebounceMs:         500,
 		DisplayMs:          5000,
 	}

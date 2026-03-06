@@ -89,11 +89,22 @@ gc mail inbox
 Handle each message type:
 
 **HELP / Blocked:**
-Assess the request. Can you help (point to docs, suggest approach)?
-If not, escalate:
+Classify by keyword, then act based on severity:
+
+| Category | Keywords | Severity | Action |
+|----------|----------|----------|--------|
+| Emergency | crash, data loss, corruption, security | Critical | Mail mayor immediately [HIGH] |
+| Failed | failed, error, cannot, broken, exception | High | Investigate; mail mayor if unresolvable |
+| Blocked | blocked, waiting, depends on, need access | Medium | Try to unblock (point to docs, suggest approach); escalate if you can't |
+| Decision | should I, which approach, trade-off, design | Low | Answer if you can; escalate only if architectural |
+| Lifecycle | done, finished, idle, restarting | Info | Acknowledge; no escalation needed |
+| General help | help, stuck, confused, how do I | Low | Point to docs/suggest approach; escalate only if truly stuck |
+
+For escalations:
 ```bash
-gc mail send mayor/ -s "ESCALATION: <polecat> needs help" -m "<details>"
+gc mail send mayor/ -s "ESCALATION: <polecat> needs help [HIGH|MED|LOW]" -m "<category>: <details>"
 ```
+Do NOT escalate routine blocks or lifecycle messages — handle them yourself.
 Archive after handling.
 
 **HANDOFF:**
