@@ -94,12 +94,12 @@ func resolveAgentIdentity(cfg *config.City, input, currentRigDir string) (config
 				matches = append(matches, a)
 				continue
 			}
-			// Pool instance: "polecat-2" matches pool "polecat" with Max >= 2.
-			if a.Pool != nil && a.Pool.Max > 1 {
+			// Pool instance: "polecat-2" matches pool "polecat" with Max >= 2 (or unlimited).
+			if a.Pool != nil && a.Pool.IsMultiInstance() {
 				prefix := a.Name + "-"
 				if strings.HasPrefix(input, prefix) {
 					suffix := input[len(prefix):]
-					if n, err := strconv.Atoi(suffix); err == nil && n >= 1 && n <= a.Pool.Max {
+					if n, err := strconv.Atoi(suffix); err == nil && n >= 1 && (a.Pool.IsUnlimited() || n <= a.Pool.Max) {
 						instance := a
 						instance.Name = input
 						instance.Pool = nil
@@ -125,11 +125,11 @@ func findAgentByQualified(cfg *config.City, identity string) (config.Agent, bool
 			return a, true
 		}
 		// Pool: match {name}-{N} within same dir.
-		if a.Dir == dir && a.Pool != nil && a.Pool.Max > 1 {
+		if a.Dir == dir && a.Pool != nil && a.Pool.IsMultiInstance() {
 			prefix := a.Name + "-"
 			if strings.HasPrefix(name, prefix) {
 				suffix := name[len(prefix):]
-				if n, err := strconv.Atoi(suffix); err == nil && n >= 1 && n <= a.Pool.Max {
+				if n, err := strconv.Atoi(suffix); err == nil && n >= 1 && (a.Pool.IsUnlimited() || n <= a.Pool.Max) {
 					instance := a
 					instance.Name = name
 					instance.Pool = nil // instances are not pools

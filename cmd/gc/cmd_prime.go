@@ -131,11 +131,11 @@ func findAgentByName(cfg *config.City, name string) (config.Agent, bool) {
 	}
 	// Pool suffix stripping: "polecat-3" → try "polecat" if it's a pool.
 	for _, a := range cfg.Agents {
-		if a.Pool != nil && a.Pool.Max > 1 {
+		if a.Pool != nil && a.Pool.IsMultiInstance() {
 			prefix := a.Name + "-"
 			if strings.HasPrefix(name, prefix) {
 				suffix := name[len(prefix):]
-				if n, err := strconv.Atoi(suffix); err == nil && n >= 1 && n <= a.Pool.Max {
+				if n, err := strconv.Atoi(suffix); err == nil && n >= 1 && (a.Pool.IsUnlimited() || n <= a.Pool.Max) {
 					return a, true
 				}
 			}

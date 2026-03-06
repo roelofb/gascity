@@ -622,6 +622,7 @@ func TestResolveAgentIdentityQualified(t *testing.T) {
 			{Name: "polecat", Dir: "frontend"},
 			{Name: "polecat", Dir: "backend"},
 			{Name: "worker", Dir: "frontend", Pool: &config.PoolConfig{Min: 0, Max: 3, Check: "echo 2"}},
+			{Name: "coder", Dir: "backend", Pool: &config.PoolConfig{Min: 0, Max: -1}},
 		},
 	}
 
@@ -651,6 +652,10 @@ func TestResolveAgentIdentityQualified(t *testing.T) {
 		{"unambiguous bare worker", "worker", "", true, "frontend", "worker"},
 		// Step 3: unambiguous pool instance via bare name.
 		{"unambiguous bare worker-2", "worker-2", "", true, "frontend", "worker-2"},
+		// Unlimited pool: qualified lookup.
+		{"qualified unlimited backend/coder-5", "backend/coder-5", "", true, "backend", "coder-5"},
+		// Unlimited pool: unambiguous bare name.
+		{"unambiguous bare coder-42", "coder-42", "", true, "backend", "coder-42"},
 	}
 
 	for _, tt := range tests {
@@ -678,6 +683,7 @@ func TestResolveAgentIdentityUnambiguous(t *testing.T) {
 			{Name: "mayor"},
 			{Name: "polecat", Dir: "myrig"},
 			{Name: "builder", Dir: "frontend", Pool: &config.PoolConfig{Min: 0, Max: 3, Check: "echo 2"}},
+			{Name: "coder", Dir: "backend", Pool: &config.PoolConfig{Min: 0, Max: -1}},
 		},
 	}
 
@@ -698,6 +704,10 @@ func TestResolveAgentIdentityUnambiguous(t *testing.T) {
 		{"builder-4 out of range", "builder-4", false, "", ""},
 		// City-wide agent resolves via step 1, before step 3.
 		{"mayor step 1", "mayor", true, "", "mayor"},
+		// Unlimited pool: bare name resolves.
+		{"unlimited pool bare", "coder", true, "backend", "coder"},
+		// Unlimited pool: any instance number resolves.
+		{"unlimited pool instance", "coder-99", true, "backend", "coder-99"},
 	}
 
 	for _, tt := range tests {
@@ -778,6 +788,22 @@ func TestFindAgentByNameSingletonPoolNoMatch(t *testing.T) {
 	_, ok := findAgentByName(cfg, "singleton-1")
 	if ok {
 		t.Error("singleton-1 should not match pool with max=1")
+	}
+}
+
+func TestFindAgentByNameUnlimitedPool(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{
+			{Name: "polecat", Dir: "myrig", Pool: &config.PoolConfig{Min: 0, Max: -1}},
+		},
+	}
+	// Any instance number should match an unlimited pool.
+	a, ok := findAgentByName(cfg, "polecat-99")
+	if !ok {
+		t.Fatal("expected to find polecat-99 in unlimited pool")
+	}
+	if a.Name != "polecat" {
+		t.Errorf("Name = %q, want %q", a.Name, "polecat")
 	}
 }
 
