@@ -28,17 +28,18 @@ func newPostRequest(url string, body io.Reader) *http.Request {
 
 // fakeState implements State for testing.
 type fakeState struct {
-	cfg         *config.City
-	rawCfg      *config.City // optional: raw config for provenance detection
-	sp          *session.Fake
-	stores      map[string]beads.Store
-	mailProvs   map[string]mail.Provider
-	eventProv   events.Provider
-	cityName    string
-	cityPath    string
-	startedAt   time.Time
-	quarantined map[string]bool
-	autos       []automations.Automation
+	cfg           *config.City
+	rawCfg        *config.City // optional: raw config for provenance detection
+	sp            *session.Fake
+	stores        map[string]beads.Store
+	cityBeadStore beads.Store // city-level store for session beads
+	mailProvs     map[string]mail.Provider
+	eventProv     events.Provider
+	cityName      string
+	cityPath      string
+	startedAt     time.Time
+	quarantined   map[string]bool
+	autos         []automations.Automation
 }
 
 func newFakeState(t *testing.T) *fakeState {
@@ -77,6 +78,7 @@ func (f *fakeState) CityPath() string                        { return f.cityPath
 func (f *fakeState) Version() string                         { return "test" }
 func (f *fakeState) StartedAt() time.Time                    { return f.startedAt }
 func (f *fakeState) IsQuarantined(sessionName string) bool   { return f.quarantined[sessionName] }
+func (f *fakeState) CityBeadStore() beads.Store              { return f.cityBeadStore }
 func (f *fakeState) Automations() []automations.Automation   { return f.autos }
 func (f *fakeState) RawConfig() *config.City {
 	if f.rawCfg != nil {

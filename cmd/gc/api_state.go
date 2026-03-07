@@ -26,18 +26,19 @@ import (
 // Protected by an RWMutex for hot-reload: readers take RLock,
 // the controller loop takes Lock when updating cfg/sp/stores.
 type controllerState struct {
-	mu         sync.RWMutex
-	cfg        *config.City
-	sp         session.Provider
-	beadStores map[string]beads.Store
-	mailProvs  map[string]mail.Provider
-	eventProv  events.Provider
-	editor     *configedit.Editor
-	cityName   string
-	cityPath   string
-	version    string
-	startedAt  time.Time
-	ct         crashTracker // nil if crash tracking disabled
+	mu            sync.RWMutex
+	cfg           *config.City
+	sp            session.Provider
+	beadStores    map[string]beads.Store
+	cityBeadStore beads.Store // city-level store for session beads
+	mailProvs     map[string]mail.Provider
+	eventProv     events.Provider
+	editor        *configedit.Editor
+	cityName      string
+	cityPath      string
+	version       string
+	startedAt     time.Time
+	ct            crashTracker // nil if crash tracking disabled
 }
 
 // newControllerState creates a controllerState with per-rig stores.
@@ -59,6 +60,8 @@ func newControllerState(
 		startedAt: time.Now(),
 	}
 	cs.beadStores, cs.mailProvs = cs.buildStores(cfg)
+	// Open city-level store for session beads (best-effort).
+	cs.cityBeadStore, _ = openCityStoreAt(cityPath)
 	return cs
 }
 
@@ -248,6 +251,13 @@ func (cs *controllerState) RawConfig() *config.City {
 		return nil
 	}
 	return raw
+}
+
+// CityBeadStore returns the city-level bead store for session beads.
+func (cs *controllerState) CityBeadStore() beads.Store {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	return cs.cityBeadStore
 }
 
 // Automations scans formula layers and returns all automations.

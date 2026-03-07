@@ -58,6 +58,10 @@ type State interface {
 	// currently quarantined due to crash-loop detection.
 	IsQuarantined(sessionName string) bool
 
+	// CityBeadStore returns the city-level bead store for session beads.
+	// Returns nil if no store is available.
+	CityBeadStore() beads.Store
+
 	// Automations returns the current set of scanned automations.
 	// Returns nil if automations are not configured.
 	Automations() []automations.Automation

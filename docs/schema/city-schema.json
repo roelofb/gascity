@@ -632,6 +632,17 @@
       "type": "object",
       "description": "BeadsConfig holds bead store settings."
     },
+    "ChatSessionsConfig": {
+      "properties": {
+        "idle_timeout": {
+          "type": "string",
+          "description": "IdleTimeout is the duration after which a detached chat session\nis auto-suspended. Duration string (e.g., \"30m\", \"1h\"). 0 = disabled."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ChatSessionsConfig configures chat session behavior."
+    },
     "City": {
       "properties": {
         "include": {
@@ -712,6 +723,10 @@
         "api": {
           "$ref": "#/$defs/APIConfig",
           "description": "API configures the optional HTTP API server."
+        },
+        "chat_sessions": {
+          "$ref": "#/$defs/ChatSessionsConfig",
+          "description": "ChatSessions configures chat session behavior (auto-suspend)."
         }
       },
       "additionalProperties": false,

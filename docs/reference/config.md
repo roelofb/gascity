@@ -26,6 +26,7 @@ City is the top-level configuration for a Gas City instance.
 | `daemon` | DaemonConfig |  |  | Daemon configures controller daemon settings. |
 | `automations` | AutomationsConfig |  |  | Automations configures automation settings (skip list). |
 | `api` | APIConfig |  |  | API configures the optional HTTP API server. |
+| `chat_sessions` | ChatSessionsConfig |  |  | ChatSessions configures chat session behavior (auto-suspend). |
 
 ## ACPSessionConfig
 
@@ -192,6 +193,14 @@ BeadsConfig holds bead store settings.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `provider` | string |  | `bd` | Provider selects the bead store backend: "bd" (default), "file", or "exec:<script>" for a user-supplied script. |
+
+## ChatSessionsConfig
+
+ChatSessionsConfig configures chat session behavior.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `idle_timeout` | string |  |  | IdleTimeout is the duration after which a detached chat session is auto-suspended. Duration string (e.g., "30m", "1h"). 0 = disabled. |
 
 ## DaemonConfig
 

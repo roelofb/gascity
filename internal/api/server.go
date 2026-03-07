@@ -189,6 +189,12 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v0/automation/{name}/enable", s.handleAutomationEnable)
 	s.mux.HandleFunc("POST /v0/automation/{name}/disable", s.handleAutomationDisable)
 
+	// Sessions (chat sessions)
+	s.mux.HandleFunc("GET /v0/sessions", s.handleSessionList)
+	s.mux.HandleFunc("GET /v0/session/{id}", s.handleSessionGet)
+	s.mux.HandleFunc("POST /v0/session/{id}/suspend", s.handleSessionSuspend)
+	s.mux.HandleFunc("POST /v0/session/{id}/close", s.handleSessionClose)
+
 	// Packs
 	s.mux.HandleFunc("GET /v0/packs", s.handlePackList)
 
