@@ -22,11 +22,13 @@ func (s *Server) handleMailList(w http.ResponseWriter, r *http.Request) {
 
 	switch status {
 	case "", "unread":
+		pp := parsePagination(r, 50)
+
 		// Aggregate across all rigs when rig is omitted (matching count semantics).
 		if rig != "" {
 			mp := s.state.MailProvider(rig)
 			if mp == nil {
-				writeListJSON(w, s.latestIndex(), []any{}, 0)
+				writePagedJSON(w, s.latestIndex(), []any{}, 0, "")
 				return
 			}
 			msgs, err := mp.Inbox(agent)
@@ -37,7 +39,11 @@ func (s *Server) handleMailList(w http.ResponseWriter, r *http.Request) {
 			if msgs == nil {
 				msgs = []mail.Message{}
 			}
-			writeListJSON(w, s.latestIndex(), msgs, len(msgs))
+			page, total, nextCursor := paginate(msgs, pp)
+			if page == nil {
+				page = []mail.Message{}
+			}
+			writePagedJSON(w, s.latestIndex(), page, total, nextCursor)
 			return
 		}
 
@@ -54,7 +60,11 @@ func (s *Server) handleMailList(w http.ResponseWriter, r *http.Request) {
 		if allMsgs == nil {
 			allMsgs = []mail.Message{}
 		}
-		writeListJSON(w, s.latestIndex(), allMsgs, len(allMsgs))
+		page, total, nextCursor := paginate(allMsgs, pp)
+		if page == nil {
+			page = []mail.Message{}
+		}
+		writePagedJSON(w, s.latestIndex(), page, total, nextCursor)
 	default:
 		writeError(w, http.StatusBadRequest, "invalid", "unsupported status filter: "+status+"; supported: unread")
 	}
@@ -119,11 +129,22 @@ func (s *Server) handleMailSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Idempotency check.
+	idemKey := r.Header.Get("Idempotency-Key")
+	var bodyHash string
+	if idemKey != "" {
+		bodyHash = hashBody(body)
+		if s.idem.handleIdempotent(w, idemKey, bodyHash) {
+			return
+		}
+	}
+
 	msg, err := mp.Send(body.From, body.To, body.Subject, body.Body)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	s.idem.storeResponse(idemKey, bodyHash, http.StatusCreated, msg)
 	writeJSON(w, http.StatusCreated, msg)
 }
 

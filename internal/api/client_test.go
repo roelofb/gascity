@@ -257,6 +257,46 @@ func TestClientBusinessErrorNoFallback(t *testing.T) {
 	}
 }
 
+func TestClientRestartRig(t *testing.T) {
+	var gotMethod, gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"}) //nolint:errcheck
+	}))
+	defer ts.Close()
+
+	c := NewClient(ts.URL)
+	if err := c.RestartRig("myrig"); err != nil {
+		t.Fatalf("RestartRig: %v", err)
+	}
+	if gotMethod != "POST" {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v0/rig/myrig/restart" {
+		t.Errorf("path = %q, want /v0/rig/myrig/restart", gotPath)
+	}
+}
+
+func TestClientRestartAgent(t *testing.T) {
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"}) //nolint:errcheck
+	}))
+	defer ts.Close()
+
+	c := NewClient(ts.URL)
+	if err := c.RestartAgent("myrig/worker"); err != nil {
+		t.Fatalf("RestartAgent: %v", err)
+	}
+	if gotPath != "/v0/agent/myrig/worker/restart" {
+		t.Errorf("path = %q, want /v0/agent/myrig/worker/restart", gotPath)
+	}
+}
+
 func TestClientCSRFHeader(t *testing.T) {
 	var gotHeader string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

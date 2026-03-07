@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"time"
 )
 
 // Server is the GC API HTTP server. It serves /v0/* endpoints and /health.
@@ -16,11 +17,18 @@ type Server struct {
 	// sessionLogSearchPaths overrides the default search paths for Claude
 	// session JSONL files. Nil means use sessionlog.DefaultSearchPaths().
 	sessionLogSearchPaths []string
+
+	// idem caches responses for Idempotency-Key replay on create endpoints.
+	idem *idempotencyCache
 }
 
 // New creates a Server with all routes registered. Does not start listening.
 func New(state State) *Server {
-	s := &Server{state: state, mux: http.NewServeMux()}
+	s := &Server{
+		state: state,
+		mux:   http.NewServeMux(),
+		idem:  newIdempotencyCache(30 * time.Minute),
+	}
 	s.registerRoutes()
 	return s
 }
@@ -28,7 +36,12 @@ func New(state State) *Server {
 // NewReadOnly creates a read-only Server that rejects all mutation requests.
 // Use this when the server binds to a non-localhost address.
 func NewReadOnly(state State) *Server {
-	s := &Server{state: state, mux: http.NewServeMux(), readOnly: true}
+	s := &Server{
+		state:    state,
+		mux:      http.NewServeMux(),
+		readOnly: true,
+		idem:     newIdempotencyCache(30 * time.Minute),
+	}
 	s.registerRoutes()
 	return s
 }

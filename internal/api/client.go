@@ -104,6 +104,18 @@ func (c *Client) ResumeRig(name string) error {
 	return c.doMutation("POST", "/v0/rig/"+escapeName(name)+"/resume", nil)
 }
 
+// RestartRig restarts a rig via POST /v0/rig/{name}/restart.
+// Kills all agents in the rig; the reconciler restarts them.
+func (c *Client) RestartRig(name string) error {
+	return c.doMutation("POST", "/v0/rig/"+escapeName(name)+"/restart", nil)
+}
+
+// RestartAgent restarts an agent via POST /v0/agent/{name}/restart.
+// Kills the agent's session; the reconciler restarts it.
+func (c *Client) RestartAgent(name string) error {
+	return c.doMutation("POST", "/v0/agent/"+escapeName(name)+"/restart", nil)
+}
+
 // escapeName escapes each segment of a potentially qualified name (e.g.,
 // "myrig/worker") for use in URL paths. Slashes are preserved as path
 // separators; other URL metacharacters (#, ?, etc.) are percent-encoded.

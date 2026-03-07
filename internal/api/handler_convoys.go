@@ -13,6 +13,7 @@ func (s *Server) handleConvoyList(w http.ResponseWriter, r *http.Request) {
 		waitForChange(r.Context(), s.state.EventProvider(), bp)
 	}
 
+	pp := parsePagination(r, 50)
 	stores := s.state.BeadStores()
 	rigNames := sortedRigNames(stores)
 	var convoys []beads.Bead
@@ -32,7 +33,11 @@ func (s *Server) handleConvoyList(w http.ResponseWriter, r *http.Request) {
 	if convoys == nil {
 		convoys = []beads.Bead{}
 	}
-	writeListJSON(w, s.latestIndex(), convoys, len(convoys))
+	page, total, nextCursor := paginate(convoys, pp)
+	if page == nil {
+		page = []beads.Bead{}
+	}
+	writePagedJSON(w, s.latestIndex(), page, total, nextCursor)
 }
 
 func (s *Server) handleConvoyGet(w http.ResponseWriter, r *http.Request) {

@@ -88,6 +88,9 @@ func (s *Server) handleRigAction(w http.ResponseWriter, r *http.Request) {
 		err = sm.SuspendRig(name)
 	case "resume":
 		err = sm.ResumeRig(name)
+	case "restart":
+		s.handleRigRestart(w, name, sm)
+		return
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "unknown rig action: "+action)
 		return
@@ -102,6 +105,44 @@ func (s *Server) handleRigAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": action, "rig": name})
+}
+
+// handleRigRestart kills all agents in a rig so the reconciler restarts them.
+func (s *Server) handleRigRestart(w http.ResponseWriter, name string, sm StateMutator) {
+	cfg := s.state.Config()
+
+	// Verify rig exists.
+	rigFound := false
+	for _, rig := range cfg.Rigs {
+		if rig.Name == name {
+			rigFound = true
+			break
+		}
+	}
+	if !rigFound {
+		writeError(w, http.StatusNotFound, "not_found", "rig "+name+" not found")
+		return
+	}
+
+	killed := make([]string, 0)
+	for _, a := range cfg.Agents {
+		if a.Dir != name {
+			continue
+		}
+		expanded := expandAgent(a, s.state.CityName(), cfg.Workspace.SessionTemplate, s.state.SessionProvider())
+		for _, ea := range expanded {
+			if err := sm.KillAgent(ea.qualifiedName); err == nil {
+				killed = append(killed, ea.qualifiedName)
+			}
+			// Ignore errors — agent might not be running.
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"action": "restart",
+		"rig":    name,
+		"killed": killed,
+	})
 }
 
 // buildRigResponse creates a rigResponse with agent counts and last activity.

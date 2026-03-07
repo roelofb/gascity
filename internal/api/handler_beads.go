@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"sort"
-	"strconv"
 
 	"github.com/gastownhall/gascity/internal/beads"
 )
@@ -22,12 +21,7 @@ func (s *Server) handleBeadList(w http.ResponseWriter, r *http.Request) {
 	qLabel := q.Get("label")
 	qAssignee := q.Get("assignee")
 	qRig := q.Get("rig")
-	limit := 50
-	if v := q.Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
+	pp := parsePagination(r, 50)
 
 	stores := s.state.BeadStores()
 	// When a specific rig is requested, query its store directly to avoid
@@ -52,19 +46,17 @@ func (s *Server) handleBeadList(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			all = append(all, b)
-			if len(all) >= limit {
-				break
-			}
-		}
-		if len(all) >= limit {
-			break
 		}
 	}
 
 	if all == nil {
 		all = []beads.Bead{}
 	}
-	writeListJSON(w, s.latestIndex(), all, len(all))
+	page, total, nextCursor := paginate(all, pp)
+	if page == nil {
+		page = []beads.Bead{}
+	}
+	writePagedJSON(w, s.latestIndex(), page, total, nextCursor)
 }
 
 func (s *Server) handleBeadReady(w http.ResponseWriter, r *http.Request) {
@@ -151,6 +143,16 @@ func (s *Server) handleBeadCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Idempotency check.
+	idemKey := r.Header.Get("Idempotency-Key")
+	var bodyHash string
+	if idemKey != "" {
+		bodyHash = hashBody(body)
+		if s.idem.handleIdempotent(w, idemKey, bodyHash) {
+			return
+		}
+	}
+
 	store := s.findStore(body.Rig)
 	if store == nil {
 		writeError(w, http.StatusBadRequest, "invalid", "rig is required when multiple rigs are configured")
@@ -168,6 +170,7 @@ func (s *Server) handleBeadCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	s.idem.storeResponse(idemKey, bodyHash, http.StatusCreated, b)
 	writeJSON(w, http.StatusCreated, b)
 }
 
