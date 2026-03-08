@@ -246,7 +246,7 @@ func TestHealExpiredTimers_ClearsExpiredHold(t *testing.T) {
 		"sleep_reason": "user-hold",
 	})
 
-	healExpiredTimers(session, store, clk)
+	healExpiredTimers(&session, store, clk)
 
 	if session.Metadata["held_until"] != "" {
 		t.Error("expected held_until to be cleared")
@@ -267,7 +267,7 @@ func TestHealExpiredTimers_KeepsActiveHold(t *testing.T) {
 		"sleep_reason": "user-hold",
 	})
 
-	healExpiredTimers(session, store, clk)
+	healExpiredTimers(&session, store, clk)
 
 	if session.Metadata["held_until"] != future {
 		t.Error("active hold should not be cleared")
@@ -285,7 +285,7 @@ func TestHealExpiredTimers_ClearsExpiredQuarantine(t *testing.T) {
 		"sleep_reason":      "quarantine",
 	})
 
-	healExpiredTimers(session, store, clk)
+	healExpiredTimers(&session, store, clk)
 
 	if session.Metadata["quarantined_until"] != "" {
 		t.Error("expected quarantined_until to be cleared")
@@ -307,7 +307,7 @@ func TestCheckStability_AliveReturnsFalse(t *testing.T) {
 		"last_woke_at": clk.Now().Add(-10 * time.Second).Format(time.RFC3339),
 	})
 
-	if checkStability(session, true, dt, store, clk) {
+	if checkStability(&session, true, dt, store, clk) {
 		t.Error("alive session should not report stability failure")
 	}
 }
@@ -323,7 +323,7 @@ func TestCheckStability_RapidExit(t *testing.T) {
 		"wake_attempts": "0",
 	})
 
-	if !checkStability(session, false, dt, store, clk) {
+	if !checkStability(&session, false, dt, store, clk) {
 		t.Error("rapid exit should report stability failure")
 	}
 
@@ -349,7 +349,7 @@ func TestCheckStability_DrainingNotCounted(t *testing.T) {
 		"last_woke_at": now.Add(-10 * time.Second).Format(time.RFC3339),
 	})
 
-	if checkStability(session, false, dt, store, clk) {
+	if checkStability(&session, false, dt, store, clk) {
 		t.Error("draining session death should not count as stability failure")
 	}
 }
@@ -365,7 +365,7 @@ func TestCheckStability_StableSession(t *testing.T) {
 		"last_woke_at": now.Add(-2 * time.Minute).Format(time.RFC3339),
 	})
 
-	if checkStability(session, false, dt, store, clk) {
+	if checkStability(&session, false, dt, store, clk) {
 		t.Error("session that lived past threshold should not be stability failure")
 	}
 }
@@ -379,7 +379,7 @@ func TestRecordWakeFailure_Quarantine(t *testing.T) {
 		"wake_attempts": "4", // one below threshold
 	})
 
-	recordWakeFailure(session, store, clk)
+	recordWakeFailure(&session, store, clk)
 
 	if session.Metadata["wake_attempts"] != "5" {
 		t.Errorf("wake_attempts = %q, want 5", session.Metadata["wake_attempts"])
@@ -401,7 +401,7 @@ func TestRecordWakeFailure_BelowThreshold(t *testing.T) {
 		"wake_attempts": "1",
 	})
 
-	recordWakeFailure(session, store, clk)
+	recordWakeFailure(&session, store, clk)
 
 	if session.Metadata["wake_attempts"] != "2" {
 		t.Errorf("wake_attempts = %q, want 2", session.Metadata["wake_attempts"])
@@ -419,7 +419,7 @@ func TestClearWakeFailures(t *testing.T) {
 		"quarantined_until": "2026-03-08T12:00:00Z",
 	})
 
-	clearWakeFailures(session, store)
+	clearWakeFailures(&session, store)
 
 	if session.Metadata["wake_attempts"] != "0" {
 		t.Errorf("wake_attempts = %q, want 0", session.Metadata["wake_attempts"])
@@ -528,19 +528,19 @@ func TestHealState(t *testing.T) {
 		"state": "asleep",
 	})
 
-	healState(session, true, store)
+	healState(&session, true, store)
 	if session.Metadata["state"] != "awake" {
 		t.Errorf("state = %q, want awake", session.Metadata["state"])
 	}
 
-	healState(session, false, store)
+	healState(&session, false, store)
 	if session.Metadata["state"] != "asleep" {
 		t.Errorf("state = %q, want asleep", session.Metadata["state"])
 	}
 
 	// No-op when already correct.
 	prevCalls := len(store.metadata["b1"])
-	healState(session, false, store)
+	healState(&session, false, store)
 	if len(store.metadata["b1"]) != prevCalls {
 		t.Error("healState should not write when state unchanged")
 	}

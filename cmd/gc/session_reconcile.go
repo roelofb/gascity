@@ -1,3 +1,7 @@
+// session_reconcile.go contains pure functions for the bead-driven session
+// reconciler. All functions assume single-threaded execution within one
+// reconciler tick. Map mutations on beads.Bead.Metadata are visible to
+// callers by design (maps are reference types).
 package main
 
 import (
@@ -86,7 +90,7 @@ func findAgentByTemplate(cfg *config.City, template string) *config.Agent {
 
 // healExpiredTimers clears expired held_until and quarantined_until.
 // Separate from wakeReasons() to keep that function pure.
-func healExpiredTimers(session beads.Bead, store beads.Store, clk clock.Clock) {
+func healExpiredTimers(session *beads.Bead, store beads.Store, clk clock.Clock) {
 	if h := session.Metadata["held_until"]; h != "" {
 		if t, _ := time.Parse(time.RFC3339, h); !t.IsZero() && clk.Now().After(t) {
 			batch := map[string]string{"held_until": ""}
@@ -124,7 +128,7 @@ func healExpiredTimers(session beads.Bead, store beads.Store, clk clock.Clock) {
 // Edge-triggered: clears last_woke_at after recording so the same crash
 // is counted exactly once.
 // Drain-aware: draining sessions died by request, not by crash.
-func checkStability(session beads.Bead, alive bool, dt *drainTracker, store beads.Store, clk clock.Clock) bool {
+func checkStability(session *beads.Bead, alive bool, dt *drainTracker, store beads.Store, clk clock.Clock) bool {
 	if alive {
 		return false
 	}
@@ -151,7 +155,7 @@ func checkStability(session beads.Bead, alive bool, dt *drainTracker, store bead
 }
 
 // recordWakeFailure increments wake_attempts and quarantines if threshold exceeded.
-func recordWakeFailure(session beads.Bead, store beads.Store, clk clock.Clock) {
+func recordWakeFailure(session *beads.Bead, store beads.Store, clk clock.Clock) {
 	attempts, _ := strconv.Atoi(session.Metadata["wake_attempts"])
 	attempts++
 
@@ -177,7 +181,7 @@ func recordWakeFailure(session beads.Bead, store beads.Store, clk clock.Clock) {
 }
 
 // clearWakeFailures resets crash counter and quarantine for a stable session.
-func clearWakeFailures(session beads.Bead, store beads.Store) {
+func clearWakeFailures(session *beads.Bead, store beads.Store) {
 	batch := map[string]string{
 		"wake_attempts":     "0",
 		"quarantined_until": "",
@@ -238,7 +242,7 @@ func isPoolExcess(session beads.Bead, cfg *config.City, poolDesired map[string]i
 }
 
 // healState updates advisory state metadata only when changed (dirty check).
-func healState(session beads.Bead, alive bool, store beads.Store) {
+func healState(session *beads.Bead, alive bool, store beads.Store) {
 	target := "asleep"
 	if alive {
 		target = "awake"

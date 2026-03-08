@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,11 +14,16 @@ import (
 	"github.com/gastownhall/gascity/internal/runtime"
 )
 
+// errTokenMismatch indicates the running session's instance token
+// doesn't match the expected one — the session was re-woken by a
+// different incarnation and this drain/stop is stale.
+var errTokenMismatch = errors.New("instance token mismatch")
+
 // preWakeCommit persists a new incarnation (generation + token) BEFORE
 // starting the process. This is Phase 1 of the two-phase wake protocol.
 // Returns the new generation and instance token on success.
 func preWakeCommit(
-	session beads.Bead,
+	session *beads.Bead,
 	store beads.Store,
 	clk clock.Clock,
 ) (newGen int, token string, err error) {
@@ -30,21 +36,27 @@ func preWakeCommit(
 	newGen = gen + 1
 	token = generateToken()
 
-	batch := map[string]string{
-		"generation":     strconv.Itoa(newGen),
-		"instance_token": token,
-		"last_woke_at":   clk.Now().UTC().Format(time.RFC3339),
-		"sleep_reason":   "",
+	// Write in a defined order so partial failures on sequential stores
+	// leave detectable (not impossible) state. Token first: a bead with
+	// a new token but old generation is detectable as "incomplete wake."
+	// Generation last: only bumped after all other fields are in place.
+	orderedWrites := []struct{ k, v string }{
+		{"instance_token", token},
+		{"last_woke_at", clk.Now().UTC().Format(time.RFC3339)},
+		{"sleep_reason", ""},
+		{"generation", strconv.Itoa(newGen)}, // must be last
 	}
-	if err := store.SetMetadataBatch(session.ID, batch); err != nil {
-		return 0, "", fmt.Errorf("pre-wake metadata commit: %w", err)
+	for _, kv := range orderedWrites {
+		if writeErr := store.SetMetadata(session.ID, kv.k, kv.v); writeErr != nil {
+			return 0, "", fmt.Errorf("pre-wake metadata commit (%s): %w", kv.k, writeErr)
+		}
 	}
 	// Update in-memory snapshot.
 	if session.Metadata == nil {
 		session.Metadata = make(map[string]string)
 	}
-	for k, v := range batch {
-		session.Metadata[k] = v
+	for _, kv := range orderedWrites {
+		session.Metadata[kv.k] = kv.v
 	}
 
 	return newGen, token, nil
@@ -157,17 +169,22 @@ func advanceSessionDrains(
 		if clk.Now().After(ds.deadline) {
 			// Drain timed out — force stop.
 			if err := verifiedStop(*session, sp); err != nil {
-				// Token mismatch means session was re-woken by a different
-				// incarnation — this drain is stale. Cancel it.
-				dt.remove(id)
+				if errors.Is(err, errTokenMismatch) {
+					// Session was re-woken by a different incarnation.
+					// This drain is stale — cancel it.
+					dt.remove(id)
+				}
+				// Other errors (transient stop failure): keep drain
+				// active for retry on next tick.
 				continue
 			}
 			// Re-probe after stop to confirm process actually exited
 			// before marking metadata as asleep.
 			if !sp.IsRunning(name) {
 				completeDrain(session, store, ds, clk)
+				dt.remove(id)
 			}
-			dt.remove(id)
+			// If still running after stop, keep drain for next tick.
 		}
 		// Else: still draining, check again next tick.
 	}
@@ -193,13 +210,19 @@ func completeDrain(session *beads.Bead, store beads.Store, ds *drainState, clk c
 
 // verifiedStop stops a session after verifying the instance_token matches.
 // Prevents stale drain operations from targeting a re-woken session.
+// Returns errTokenMismatch if the running process has a different token.
+//
+// NOTE: On composite providers (auto/hybrid), GetMeta and Stop may route
+// to different backends if the route table is stale. This is a pre-existing
+// routing limitation — when the reconciler is wired in, consider a
+// provider-level VerifiedStop that atomically verifies+stops on the same backend.
 func verifiedStop(session beads.Bead, sp runtime.Provider) error {
 	name := session.Metadata["session_name"]
 	expectedToken := session.Metadata["instance_token"]
 	if expectedToken != "" {
 		actualToken, _ := sp.GetMeta(name, "GC_INSTANCE_TOKEN")
 		if actualToken != "" && actualToken != expectedToken {
-			return fmt.Errorf("instance token mismatch for session %s", session.ID)
+			return fmt.Errorf("%w for session %s", errTokenMismatch, session.ID)
 		}
 	}
 	return sp.Stop(name)
@@ -212,7 +235,7 @@ func verifiedInterrupt(session beads.Bead, sp runtime.Provider) error {
 	if expectedToken != "" {
 		actualToken, _ := sp.GetMeta(name, "GC_INSTANCE_TOKEN")
 		if actualToken != "" && actualToken != expectedToken {
-			return fmt.Errorf("instance token mismatch for session %s", session.ID)
+			return fmt.Errorf("%w for session %s", errTokenMismatch, session.ID)
 		}
 	}
 	return sp.Interrupt(name)

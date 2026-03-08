@@ -29,7 +29,7 @@ func TestPreWakeCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	newGen, token, err := preWakeCommit(b, store, clk)
+	newGen, token, err := preWakeCommit(&b, store, clk)
 	if err != nil {
 		t.Fatalf("preWakeCommit: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestPreWakeCommit_InvalidName(t *testing.T) {
 		},
 	})
 
-	_, _, err := preWakeCommit(b, store, clk)
+	_, _, err := preWakeCommit(&b, store, clk)
 	if err == nil {
 		t.Error("expected error for invalid session_name")
 	}
