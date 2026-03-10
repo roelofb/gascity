@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/sessionlog"
 )
@@ -302,10 +304,27 @@ func (s *Server) handleAgentOutputStream(w http.ResponseWriter, r *http.Request,
 // Uses file size tracking to skip re-reads when the file hasn't grown, and
 // UUID-based cursor to correctly identify new turns after DAG resolution.
 func (s *Server) streamSessionLog(ctx context.Context, w http.ResponseWriter, name string, logPath string) {
-	poll := time.NewTicker(outputStreamPollInterval)
-	defer poll.Stop()
 	keepalive := time.NewTicker(sseKeepalive)
 	defer keepalive.Stop()
+
+	// Try fsnotify for real-time delivery; fall back to polling.
+	watcher, watchErr := fsnotify.NewWatcher()
+	var fallbackPoll *time.Ticker
+	if watchErr == nil {
+		if addErr := watcher.Add(logPath); addErr != nil {
+			_ = watcher.Close()
+			watcher = nil
+		}
+	} else {
+		watcher = nil
+	}
+	if watcher != nil {
+		defer watcher.Close() //nolint:errcheck // best-effort cleanup
+	} else {
+		fallbackPoll = time.NewTicker(outputStreamPollInterval)
+		defer fallbackPoll.Stop()
+		log.Printf("agent stream: fsnotify unavailable for %s, falling back to polling", logPath)
+	}
 
 	var lastSize int64
 	var lastSentUUID string // UUID of the last turn we emitted
@@ -383,13 +402,38 @@ func (s *Server) streamSessionLog(ctx context.Context, w http.ResponseWriter, na
 	readAndEmit()
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-poll.C:
-			readAndEmit()
-		case <-keepalive.C:
-			writeSSEComment(w)
+		if watcher != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if ev.Has(fsnotify.Write) {
+					readAndEmit()
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Printf("fsnotify: watcher error: %v, switching to polling", err)
+				watcher.Close() //nolint:errcheck // best-effort cleanup on error transition
+				watcher = nil
+				fallbackPoll = time.NewTicker(outputStreamPollInterval)
+				defer fallbackPoll.Stop() //nolint:staticcheck // deferred in loop is intentional; executed on function return
+			case <-keepalive.C:
+				writeSSEComment(w)
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				return
+			case <-fallbackPoll.C:
+				readAndEmit()
+			case <-keepalive.C:
+				writeSSEComment(w)
+			}
 		}
 	}
 }

@@ -54,6 +54,11 @@ type ProviderSpec struct {
 	// Enables the Generate & Pass strategy for session key management.
 	// Example: "--session-id" (claude)
 	SessionIDFlag string `toml:"session_id_flag,omitempty"`
+	// PermissionModes maps permission mode names to CLI flags.
+	// Example: {"default": "--dangerously-skip-permissions", "plan": "--permission-mode plan"}
+	// When a session requests a specific mode, the corresponding flag replaces
+	// any default permission flag in the command.
+	PermissionModes map[string]string `toml:"permission_modes,omitempty"`
 }
 
 // ResolvedProvider is the fully-merged, ready-to-use provider config.
@@ -75,6 +80,7 @@ type ResolvedProvider struct {
 	ResumeFlag             string
 	ResumeStyle            string
 	SessionIDFlag          string
+	PermissionModes        map[string]string
 }
 
 // CommandString returns the full command line: command followed by args.
@@ -131,6 +137,12 @@ func BuiltinProviders() map[string]ProviderSpec {
 			ResumeFlag:             "--resume",
 			ResumeStyle:            "flag",
 			SessionIDFlag:          "--session-id",
+			PermissionModes: map[string]string{
+				"default":   "--dangerously-skip-permissions",
+				"plan":      "--permission-mode plan",
+				"auto-edit": "--permission-mode auto-edit",
+				"full-auto": "--permission-mode full-auto",
+			},
 		},
 		"codex": {
 			DisplayName:      "Codex CLI",
@@ -140,6 +152,9 @@ func BuiltinProviders() map[string]ProviderSpec {
 			ReadyDelayMs:     3000,
 			ProcessNames:     []string{"codex"},
 			InstructionsFile: "AGENTS.md",
+			PermissionModes: map[string]string{
+				"default": "--dangerously-bypass-approvals-and-sandbox",
+			},
 		},
 		"gemini": {
 			DisplayName:      "Gemini CLI",
@@ -150,6 +165,9 @@ func BuiltinProviders() map[string]ProviderSpec {
 			ProcessNames:     []string{"gemini"},
 			SupportsHooks:    true,
 			InstructionsFile: "AGENTS.md",
+			PermissionModes: map[string]string{
+				"default": "--approval-mode yolo",
+			},
 		},
 		"cursor": {
 			DisplayName:      "Cursor Agent",

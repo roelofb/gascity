@@ -39,6 +39,9 @@ type sessionResponse struct {
 	Model         string `json:"model,omitempty"`
 	ContextPct    *int   `json:"context_pct,omitempty"`
 	ContextWindow *int   `json:"context_window,omitempty"`
+
+	// Metadata exposes bead metadata for external consumers (e.g., mc_starred).
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 func sessionToResponse(info session.Info, cfg *config.City) sessionResponse {
@@ -135,6 +138,9 @@ func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 	items := make([]sessionResponse, len(sessions))
 	for i, sess := range sessions {
 		items[i] = sessionResponseWithReason(sess, beadIndex[sess.ID], cfg)
+		if b := beadIndex[sess.ID]; b != nil && b.Metadata != nil {
+			items[i].Metadata = b.Metadata
+		}
 		s.enrichSessionResponse(&items[i], sess, cfg, sp, wantPeek)
 	}
 	writeJSON(w, http.StatusOK, listResponse{Items: items, Total: len(items)})
@@ -163,6 +169,9 @@ func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 	b, _ := store.Get(id)
 	wantPeek := r.URL.Query().Get("peek") == "true"
 	resp := sessionResponseWithReason(info, &b, cfg)
+	if b.Metadata != nil {
+		resp.Metadata = b.Metadata
+	}
 	s.enrichSessionResponse(&resp, info, cfg, sp, wantPeek)
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -301,7 +310,11 @@ func (s *Server) handleSessionRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, _ := store.Get(id)
-	writeJSON(w, http.StatusOK, sessionResponseWithReason(info, &updated, s.state.Config()))
+	rresp := sessionResponseWithReason(info, &updated, s.state.Config())
+	if updated.Metadata != nil {
+		rresp.Metadata = updated.Metadata
+	}
+	writeJSON(w, http.StatusOK, rresp)
 }
 
 // enrichSessionResponse populates runtime fields on a session response:
@@ -406,5 +419,9 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, _ := store.Get(id)
-	writeJSON(w, http.StatusOK, sessionResponseWithReason(info, &updated, s.state.Config()))
+	presp := sessionResponseWithReason(info, &updated, s.state.Config())
+	if updated.Metadata != nil {
+		presp.Metadata = updated.Metadata
+	}
+	writeJSON(w, http.StatusOK, presp)
 }

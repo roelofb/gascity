@@ -1240,6 +1240,13 @@
         "session_id_flag": {
           "type": "string",
           "description": "SessionIDFlag is the CLI flag for creating a session with a specific ID.\nEnables the Generate \u0026 Pass strategy for session key management.\nExample: \"--session-id\" (claude)"
+        },
+        "permission_modes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "PermissionModes maps permission mode names to CLI flags.\nExample: {\"default\": \"--dangerously-skip-permissions\", \"plan\": \"--permission-mode plan\"}\nWhen a session requests a specific mode, the corresponding flag replaces\nany default permission flag in the command."
         }
       },
       "additionalProperties": false,

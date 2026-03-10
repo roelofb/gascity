@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/session"
@@ -45,6 +47,14 @@ type sessionTranscriptResponse struct {
 	Template   string                     `json:"template"`
 	Format     string                     `json:"format"`
 	Turns      []outputTurn               `json:"turns"`
+	Pagination *sessionlog.PaginationInfo `json:"pagination,omitempty"`
+}
+
+type sessionRawTranscriptResponse struct {
+	ID         string                     `json:"id"`
+	Template   string                     `json:"template"`
+	Format     string                     `json:"format"`
+	Messages   []json.RawMessage          `json:"messages"`
 	Pagination *sessionlog.PaginationInfo `json:"pagination,omitempty"`
 }
 
@@ -231,6 +241,8 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	wantRaw := r.URL.Query().Get("format") == "raw"
+
 	if path != "" {
 		tail := 0
 		if v := r.URL.Query().Get("tail"); v != "" {
@@ -251,6 +263,26 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			return
 		}
 
+		if wantRaw {
+			msgs := make([]json.RawMessage, 0, len(sess.Messages))
+			for _, entry := range sess.Messages {
+				switch entry.Type {
+				case "user", "assistant", "system", "result":
+					if len(entry.Raw) > 0 {
+						msgs = append(msgs, entry.Raw)
+					}
+				}
+			}
+			writeJSON(w, http.StatusOK, sessionRawTranscriptResponse{
+				ID:         info.ID,
+				Template:   info.Template,
+				Format:     "raw",
+				Messages:   msgs,
+				Pagination: sess.Pagination,
+			})
+			return
+		}
+
 		turns := make([]outputTurn, 0, len(sess.Messages))
 		for _, entry := range sess.Messages {
 			turn := entryToTurn(entry)
@@ -265,6 +297,16 @@ func (s *Server) handleSessionTranscript(w http.ResponseWriter, r *http.Request)
 			Format:     "conversation",
 			Turns:      turns,
 			Pagination: sess.Pagination,
+		})
+		return
+	}
+
+	if wantRaw {
+		writeJSON(w, http.StatusOK, sessionRawTranscriptResponse{
+			ID:       info.ID,
+			Template: info.Template,
+			Format:   "raw",
+			Messages: []json.RawMessage{},
 		})
 		return
 	}
@@ -490,13 +532,22 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	format := r.URL.Query().Get("format")
 	if info.Closed {
-		s.emitClosedSessionSnapshot(w, info, path)
+		if format == "raw" {
+			s.emitClosedSessionSnapshotRaw(w, info, path)
+		} else {
+			s.emitClosedSessionSnapshot(w, info, path)
+		}
 		return
 	}
 	switch {
 	case path != "":
-		s.streamSessionTranscriptLog(ctx, w, info, path)
+		if format == "raw" {
+			s.streamSessionTranscriptLogRaw(ctx, w, info, path)
+		} else {
+			s.streamSessionTranscriptLog(ctx, w, info, path)
+		}
 	default:
 		s.streamSessionPeek(ctx, w, info)
 	}
@@ -535,11 +586,181 @@ func (s *Server) emitClosedSessionSnapshot(w http.ResponseWriter, info session.I
 	writeSSE(w, "turn", 1, data)
 }
 
-func (s *Server) streamSessionTranscriptLog(ctx context.Context, w http.ResponseWriter, info session.Info, logPath string) {
-	poll := time.NewTicker(outputStreamPollInterval)
-	defer poll.Stop()
+func (s *Server) emitClosedSessionSnapshotRaw(w http.ResponseWriter, info session.Info, logPath string) {
+	if logPath == "" {
+		return
+	}
+	sess, err := sessionlog.ReadFile(logPath, 0)
+	if err != nil {
+		return
+	}
+
+	rawMessages := make([]json.RawMessage, 0, len(sess.Messages))
+	for _, entry := range sess.Messages {
+		if len(entry.Raw) == 0 {
+			continue
+		}
+		rawMessages = append(rawMessages, entry.Raw)
+	}
+	if len(rawMessages) == 0 {
+		return
+	}
+
+	data, err := json.Marshal(sessionRawTranscriptResponse{
+		ID:       info.ID,
+		Template: info.Template,
+		Format:   "raw",
+		Messages: rawMessages,
+	})
+	if err != nil {
+		return
+	}
+	writeSSE(w, "message", 1, data)
+}
+
+func (s *Server) streamSessionTranscriptLogRaw(ctx context.Context, w http.ResponseWriter, info session.Info, logPath string) {
 	keepalive := time.NewTicker(sseKeepalive)
 	defer keepalive.Stop()
+
+	// Try fsnotify for real-time delivery; fall back to polling.
+	watcher, watchErr := fsnotify.NewWatcher()
+	var fallbackPoll *time.Ticker
+	if watchErr == nil {
+		if addErr := watcher.Add(logPath); addErr != nil {
+			_ = watcher.Close()
+			watcher = nil
+		}
+	} else {
+		watcher = nil
+	}
+	if watcher != nil {
+		defer watcher.Close() //nolint:errcheck // best-effort cleanup
+	} else {
+		fallbackPoll = time.NewTicker(outputStreamPollInterval)
+		defer fallbackPoll.Stop()
+		log.Printf("session stream: fsnotify unavailable for %s, falling back to polling", logPath)
+	}
+
+	var lastSize int64
+	var lastSentUUID string
+	var seq uint64
+
+	readAndEmit := func() {
+		stat, err := os.Stat(logPath)
+		if err != nil {
+			return
+		}
+		if stat.Size() == lastSize {
+			return
+		}
+
+		sess, err := sessionlog.ReadFile(logPath, 0)
+		if err != nil {
+			return
+		}
+		lastSize = stat.Size()
+
+		rawMessages := make([]json.RawMessage, 0, len(sess.Messages))
+		uuids := make([]string, 0, len(sess.Messages))
+		for _, entry := range sess.Messages {
+			if len(entry.Raw) == 0 {
+				continue
+			}
+			rawMessages = append(rawMessages, entry.Raw)
+			uuids = append(uuids, entry.UUID)
+		}
+		if len(rawMessages) == 0 {
+			return
+		}
+
+		startIdx := 0
+		if lastSentUUID != "" {
+			for i, uuid := range uuids {
+				if uuid == lastSentUUID {
+					startIdx = i + 1
+					break
+				}
+			}
+		}
+		if startIdx >= len(rawMessages) {
+			return
+		}
+		lastSentUUID = uuids[len(uuids)-1]
+		seq++
+
+		data, err := json.Marshal(sessionRawTranscriptResponse{
+			ID:       info.ID,
+			Template: info.Template,
+			Format:   "raw",
+			Messages: rawMessages[startIdx:],
+		})
+		if err != nil {
+			return
+		}
+		writeSSE(w, "message", seq, data)
+	}
+
+	readAndEmit()
+
+	for {
+		if watcher != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if ev.Has(fsnotify.Write) {
+					readAndEmit()
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Printf("fsnotify: watcher error: %v, switching to polling", err)
+				watcher.Close() //nolint:errcheck // best-effort cleanup on error transition
+				watcher = nil
+				fallbackPoll = time.NewTicker(outputStreamPollInterval)
+				defer fallbackPoll.Stop() //nolint:staticcheck // deferred in loop is intentional; executed on function return
+			case <-keepalive.C:
+				writeSSEComment(w)
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				return
+			case <-fallbackPoll.C:
+				readAndEmit()
+			case <-keepalive.C:
+				writeSSEComment(w)
+			}
+		}
+	}
+}
+
+func (s *Server) streamSessionTranscriptLog(ctx context.Context, w http.ResponseWriter, info session.Info, logPath string) {
+	keepalive := time.NewTicker(sseKeepalive)
+	defer keepalive.Stop()
+
+	// Try fsnotify for real-time delivery; fall back to polling.
+	watcher, watchErr := fsnotify.NewWatcher()
+	var fallbackPoll *time.Ticker
+	if watchErr == nil {
+		if addErr := watcher.Add(logPath); addErr != nil {
+			_ = watcher.Close()
+			watcher = nil
+		}
+	} else {
+		watcher = nil
+	}
+	if watcher != nil {
+		defer watcher.Close() //nolint:errcheck // best-effort cleanup
+	} else {
+		fallbackPoll = time.NewTicker(outputStreamPollInterval)
+		defer fallbackPoll.Stop()
+		log.Printf("session stream: fsnotify unavailable for %s, falling back to polling", logPath)
+	}
 
 	var lastSize int64
 	var lastSentUUID string
@@ -604,13 +825,38 @@ func (s *Server) streamSessionTranscriptLog(ctx context.Context, w http.Response
 	readAndEmit()
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-poll.C:
-			readAndEmit()
-		case <-keepalive.C:
-			writeSSEComment(w)
+		if watcher != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if ev.Has(fsnotify.Write) {
+					readAndEmit()
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Printf("fsnotify: watcher error: %v, switching to polling", err)
+				watcher.Close() //nolint:errcheck // best-effort cleanup on error transition
+				watcher = nil
+				fallbackPoll = time.NewTicker(outputStreamPollInterval)
+				defer fallbackPoll.Stop() //nolint:staticcheck // deferred in loop is intentional; executed on function return
+			case <-keepalive.C:
+				writeSSEComment(w)
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				return
+			case <-fallbackPoll.C:
+				readAndEmit()
+			case <-keepalive.C:
+				writeSSEComment(w)
+			}
 		}
 	}
 }

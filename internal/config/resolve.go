@@ -151,6 +151,12 @@ func specToResolved(name string, spec *ProviderSpec) *ResolvedProvider {
 			rp.Env[k] = v
 		}
 	}
+	if len(spec.PermissionModes) > 0 {
+		rp.PermissionModes = make(map[string]string, len(spec.PermissionModes))
+		for k, v := range spec.PermissionModes {
+			rp.PermissionModes[k] = v
+		}
+	}
 	return rp
 }
 

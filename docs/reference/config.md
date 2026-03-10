@@ -376,6 +376,7 @@ ProviderSpec defines a named provider's startup parameters.
 | `resume_flag` | string |  |  | ResumeFlag is the CLI flag for resuming a session by ID. Empty means the provider does not support resume. Examples: "--resume" (claude), "resume" (codex) |
 | `resume_style` | string |  |  | ResumeStyle controls how ResumeFlag is applied:   "flag"       → command --resume <key>              (default)   "subcommand" → command resume <key> |
 | `session_id_flag` | string |  |  | SessionIDFlag is the CLI flag for creating a session with a specific ID. Enables the Generate & Pass strategy for session key management. Example: "--session-id" (claude) |
+| `permission_modes` | map[string]string |  |  | PermissionModes maps permission mode names to CLI flags. Example: {"default": "--dangerously-skip-permissions", "plan": "--permission-mode plan"} When a session requests a specific mode, the corresponding flag replaces any default permission flag in the command. |
 
 ## Rig
 
