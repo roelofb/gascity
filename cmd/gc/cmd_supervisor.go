@@ -135,6 +135,11 @@ type reconcileRequest struct {
 	done chan struct{}
 }
 
+var (
+	supervisorReloadQueueTimeout = 5 * time.Second
+	supervisorReloadWaitTimeout  = 5 * time.Minute
+)
+
 func startSupervisorSocket(sockPath string, cancelFn context.CancelFunc, reconcileCh chan reconcileRequest) (net.Listener, error) {
 	os.Remove(sockPath) //nolint:errcheck // remove stale socket from previous crash
 	lis, err := net.Listen("unix", sockPath)
@@ -175,9 +180,18 @@ func handleSupervisorConn(conn net.Conn, cancelFn context.CancelFunc, reconcileC
 			fmt.Fprintf(conn, "%d\n", os.Getpid()) //nolint:errcheck
 		case "reload":
 			req := reconcileRequest{done: make(chan struct{})}
-			reconcileCh <- req
-			<-req.done
-			conn.Write([]byte("ok\n")) //nolint:errcheck
+			select {
+			case reconcileCh <- req:
+			case <-time.After(supervisorReloadQueueTimeout):
+				conn.Write([]byte("busy\n")) //nolint:errcheck
+				return
+			}
+			select {
+			case <-req.done:
+				conn.Write([]byte("ok\n")) //nolint:errcheck
+			case <-time.After(supervisorReloadWaitTimeout):
+				conn.Write([]byte("timeout\n")) //nolint:errcheck
+			}
 		}
 	}
 }
@@ -264,14 +278,22 @@ func reloadSupervisor(stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "gc supervisor reload: supervisor is not running") //nolint:errcheck
 		return 1
 	}
-	defer conn.Close()                                     //nolint:errcheck
-	conn.Write([]byte("reload\n"))                         //nolint:errcheck
-	conn.SetReadDeadline(time.Now().Add(60 * time.Second)) //nolint:errcheck
+	defer conn.Close()                                                                //nolint:errcheck
+	conn.Write([]byte("reload\n"))                                                    //nolint:errcheck
+	conn.SetReadDeadline(time.Now().Add(supervisorReloadWaitTimeout + 5*time.Second)) //nolint:errcheck
 	buf := make([]byte, 64)
 	n, _ := conn.Read(buf)
-	if n > 0 && string(buf[:n]) == "ok\n" {
+	resp := strings.TrimSpace(string(buf[:n]))
+	switch resp {
+	case "ok":
 		fmt.Fprintln(stdout, "Reconciliation triggered.") //nolint:errcheck
 		return 0
+	case "busy":
+		fmt.Fprintln(stderr, "gc supervisor reload: reconcile queue is busy") //nolint:errcheck
+		return 1
+	case "timeout":
+		fmt.Fprintln(stderr, "gc supervisor reload: reconcile did not finish before timeout") //nolint:errcheck
+		return 1
 	}
 	fmt.Fprintln(stderr, "gc supervisor reload: no acknowledgment from supervisor") //nolint:errcheck
 	return 1
@@ -329,20 +351,6 @@ func runSupervisor(stdout, stderr io.Writer) int {
 		}
 	}()
 
-	// Control socket — uses supervisor-specific path, not the per-city controller socket.
-	sockPath := supervisorSocketPath()
-	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
-		fmt.Fprintf(stderr, "gc supervisor: creating socket dir: %v\n", err) //nolint:errcheck
-		return 1
-	}
-	lis, err := startSupervisorSocket(sockPath, cancel, reconcileCh)
-	if err != nil {
-		fmt.Fprintf(stderr, "gc supervisor: %v\n", err) //nolint:errcheck
-		return 1
-	}
-	defer lis.Close()         //nolint:errcheck
-	defer os.Remove(sockPath) //nolint:errcheck
-
 	// Load supervisor config.
 	supCfg, err := supervisor.LoadConfig(supervisor.ConfigPath())
 	if err != nil {
@@ -372,20 +380,33 @@ func runSupervisor(stdout, stderr io.Writer) int {
 	apiLis, apiErr := net.Listen("tcp", addr)
 	if apiErr != nil {
 		fmt.Fprintf(stderr, "gc supervisor: api: listen %s failed: %v\n", addr, apiErr) //nolint:errcheck
-		// Non-fatal — continue without API.
-	} else {
-		go func() {
-			if err := apiMux.Serve(apiLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				fmt.Fprintf(stderr, "gc supervisor: api: %v\n", err) //nolint:errcheck
-			}
-		}()
-		defer func() {
-			shutCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
-			defer c()
-			apiMux.Shutdown(shutCtx) //nolint:errcheck
-		}()
-		fmt.Fprintf(stdout, "Supervisor API listening on http://%s\n", addr) //nolint:errcheck
+		return 1
 	}
+	go func() {
+		if err := apiMux.Serve(apiLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(stderr, "gc supervisor: api: %v\n", err) //nolint:errcheck
+		}
+	}()
+	defer func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		apiMux.Shutdown(shutCtx) //nolint:errcheck
+	}()
+	fmt.Fprintf(stdout, "Supervisor API listening on http://%s\n", addr) //nolint:errcheck
+
+	// Control socket — uses supervisor-specific path, not the per-city controller socket.
+	sockPath := supervisorSocketPath()
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
+		fmt.Fprintf(stderr, "gc supervisor: creating socket dir: %v\n", err) //nolint:errcheck
+		return 1
+	}
+	lis, err := startSupervisorSocket(sockPath, cancel, reconcileCh)
+	if err != nil {
+		fmt.Fprintf(stderr, "gc supervisor: %v\n", err) //nolint:errcheck
+		return 1
+	}
+	defer lis.Close()         //nolint:errcheck
+	defer os.Remove(sockPath) //nolint:errcheck
 
 	fmt.Fprintln(stdout, "Supervisor started.") //nolint:errcheck
 

@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"net"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -107,6 +109,32 @@ func TestDoSupervisorStartAlreadyRunning(t *testing.T) {
 	}
 }
 
+func TestRunSupervisorFailsWhenAPIPortUnavailable(t *testing.T) {
+	t.Setenv("GC_HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lis.Close() //nolint:errcheck
+
+	port := lis.Addr().(*net.TCPAddr).Port
+	cfg := []byte("[supervisor]\nport = " + strconv.Itoa(port) + "\n")
+	if err := os.WriteFile(supervisor.ConfigPath(), cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runSupervisor(&stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("runSupervisor code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "api: listen") {
+		t.Fatalf("stderr = %q, want API listen failure", stderr.String())
+	}
+}
+
 func TestControllerStatusForSupervisorManagedCity(t *testing.T) {
 	gcHome := t.TempDir()
 	t.Setenv("GC_HOME", gcHome)
@@ -128,6 +156,36 @@ func TestControllerStatusForSupervisorManagedCity(t *testing.T) {
 	ctrl := controllerStatusForCity(cityPath)
 	if !ctrl.Running || ctrl.PID != 4242 || ctrl.Mode != "supervisor" {
 		t.Fatalf("controller status = %+v, want running supervisor PID", ctrl)
+	}
+}
+
+func TestSupervisorCityAPIClientRequiresRunning(t *testing.T) {
+	gcHome := t.TempDir()
+	t.Setenv("GC_HOME", gcHome)
+
+	cityPath := filepath.Join(t.TempDir(), "bright-lights")
+	if err := os.MkdirAll(cityPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"bright-lights\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := supervisor.NewRegistry(supervisor.RegistryPath())
+	if err := reg.Register(cityPath, "bright-lights"); err != nil {
+		t.Fatal(err)
+	}
+
+	oldAlive := supervisorAliveHook
+	oldRunning := supervisorCityRunningHook
+	supervisorAliveHook = func() int { return 4242 }
+	supervisorCityRunningHook = func(string) (bool, bool) { return false, true }
+	t.Cleanup(func() {
+		supervisorAliveHook = oldAlive
+		supervisorCityRunningHook = oldRunning
+	})
+
+	if client := supervisorCityAPIClient(cityPath); client != nil {
+		t.Fatalf("supervisorCityAPIClient(%q) = %#v, want nil for stopped city", cityPath, client)
 	}
 }
 

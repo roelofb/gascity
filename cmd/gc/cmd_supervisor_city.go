@@ -193,6 +193,9 @@ func supervisorCityAPIClient(cityPath string) *api.Client {
 	if err != nil || !registered || supervisorAliveHook() == 0 {
 		return nil
 	}
+	if running, known := supervisorCityRunningHook(cityPath); !known || !running {
+		return nil
+	}
 	baseURL, err := supervisorAPIBaseURL()
 	if err != nil {
 		return nil
