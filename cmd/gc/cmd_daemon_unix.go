@@ -4,8 +4,8 @@ package main
 
 import "syscall"
 
-// daemonSysProcAttr returns SysProcAttr for detaching the child from the
-// parent's process group (Setpgid), so the daemon survives parent exit.
-func daemonSysProcAttr() *syscall.SysProcAttr {
+// backgroundSysProcAttr returns SysProcAttr for detaching a background child
+// from the parent's process group, so it survives parent exit.
+func backgroundSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true}
 }

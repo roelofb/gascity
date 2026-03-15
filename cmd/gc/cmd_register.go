@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"text/tabwriter"
 
-	"github.com/gastownhall/gascity/internal/config"
-	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/supervisor"
 	"github.com/spf13/cobra"
 )
@@ -21,8 +19,7 @@ func newRegisterCmd(stdout, stderr io.Writer) *cobra.Command {
 
 If no path is given, registers the current city (discovered from cwd).
 Registration is idempotent — registering the same city twice is a no-op.
-City names (derived from directory basename or workspace.name) must be
-unique across all registered cities.`,
+The supervisor is started if needed and immediately reconciles the city.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if doRegister(args, stdout, stderr) != 0 {
@@ -52,26 +49,8 @@ func doRegister(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gc register: %s is not a city directory (no city.toml found)\n", cityPath) //nolint:errcheck
 		return 1
 	}
-
-	// Resolve effective city name from config (workspace.name or basename).
-	// Use LoadWithIncludes to match the supervisor's config load path —
-	// if workspace.name is set in an included file, we must see it here
-	// to avoid name drift between registration and runtime.
-	effectiveName := filepath.Base(cityPath)
-	tomlPath := filepath.Join(cityPath, "city.toml")
-	if cfg, _, loadErr := config.LoadWithIncludes(fsys.OSFS{}, tomlPath); loadErr == nil {
-		if cfg.Workspace.Name != "" {
-			effectiveName = cfg.Workspace.Name
-		}
-	}
-
-	reg := supervisor.NewRegistry(supervisor.RegistryPath())
-	if err := reg.Register(cityPath, effectiveName); err != nil {
-		fmt.Fprintf(stderr, "gc register: %v\n", err) //nolint:errcheck
-		return 1
-	}
-	fmt.Fprintf(stdout, "Registered city '%s' (%s)\n", effectiveName, cityPath) //nolint:errcheck
-	return 0
+	_, code := registerCityWithSupervisor(cityPath, stdout, stderr, "gc register")
+	return code
 }
 
 func newUnregisterCmd(stdout, stderr io.Writer) *cobra.Command {
@@ -80,7 +59,8 @@ func newUnregisterCmd(stdout, stderr io.Writer) *cobra.Command {
 		Short: "Remove a city from the machine-wide supervisor",
 		Long: `Remove a city from the machine-wide supervisor registry.
 
-If no path is given, unregisters the current city (discovered from cwd).`,
+If no path is given, unregisters the current city (discovered from cwd).
+If the supervisor is running, it immediately stops managing the city.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if doUnregister(args, stdout, stderr) != 0 {
@@ -104,14 +84,8 @@ func doUnregister(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gc unregister: %v\n", err) //nolint:errcheck
 		return 1
 	}
-
-	reg := supervisor.NewRegistry(supervisor.RegistryPath())
-	if err := reg.Unregister(cityPath); err != nil {
-		fmt.Fprintf(stderr, "gc unregister: %v\n", err) //nolint:errcheck
-		return 1
-	}
-	fmt.Fprintf(stdout, "Unregistered city '%s' (%s)\n", filepath.Base(cityPath), cityPath) //nolint:errcheck
-	return 0
+	_, code := unregisterCityFromSupervisor(cityPath, stdout, stderr, "gc unregister")
+	return code
 }
 
 func newCitiesCmd(stdout, stderr io.Writer) *cobra.Command {

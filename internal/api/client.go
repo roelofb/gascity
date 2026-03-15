@@ -54,8 +54,9 @@ func ShouldFallback(err error) bool {
 // It wraps mutation endpoints so CLI commands can route writes
 // through the API when a controller is running.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL     string
+	scopePrefix string
+	httpClient  *http.Client
 }
 
 // NewClient creates a new API client targeting the given base URL
@@ -67,6 +68,25 @@ func NewClient(baseURL string) *Client {
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// NewCityScopedClient creates a client that routes requests through the
+// supervisor's city-scoped API namespace for the given city name.
+func NewCityScopedClient(baseURL, cityName string) *Client {
+	c := NewClient(baseURL)
+	c.scopePrefix = "/v0/city/" + escapeName(cityName)
+	return c
+}
+
+// ListCities fetches the current set of cities managed by the supervisor.
+func (c *Client) ListCities() ([]CityInfo, error) {
+	var resp struct {
+		Items []CityInfo `json:"items"`
+	}
+	if err := c.doGet("/v0/cities", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
 }
 
 // ListServices fetches the current workspace service statuses.
@@ -159,7 +179,7 @@ func (c *Client) doMutation(method, path string, body any) error {
 		bodyReader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequest(method, c.baseURL+path, bodyReader)
+	req, err := http.NewRequest(method, c.urlForPath(path), bodyReader)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -207,7 +227,7 @@ func (c *Client) doMutation(method, path string, body any) error {
 }
 
 func (c *Client) doGet(path string, out any) error {
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	req, err := http.NewRequest(http.MethodGet, c.urlForPath(path), nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -242,4 +262,11 @@ func (c *Client) doGet(path string, out any) error {
 		return fmt.Errorf("API error: %s", apiErr.Error)
 	}
 	return fmt.Errorf("API returned %d", resp.StatusCode)
+}
+
+func (c *Client) urlForPath(path string) string {
+	if c.scopePrefix != "" && strings.HasPrefix(path, "/v0/") {
+		return c.baseURL + c.scopePrefix + strings.TrimPrefix(path, "/v0")
+	}
+	return c.baseURL + path
 }

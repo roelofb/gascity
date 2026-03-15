@@ -110,21 +110,21 @@ gc cities            # list registered cities
 # Start the machine supervisor (manages all registered cities)
 gc supervisor start
 
-# Or: gc register --start (register + ensure supervisor is running)
-gc register --start
+# Register the current city and ensure it is running
+gc register
 ```
 
-The supervisor is a single long-running daemon. It replaces per-city
-`gc start --controller`. For backward compatibility, `gc start` from
-inside a city directory still works -- it auto-registers the city and
-starts the machine supervisor if not already running.
+The supervisor is a single long-running daemon. It replaces the exposed
+per-city controller mode. `gc start` from inside a city directory
+auto-registers the city, ensures the machine supervisor is running, and
+triggers an immediate reconcile.
 
 ### Stopping
 
 ```bash
 gc supervisor stop    # stops ALL cities, then the supervisor
 gc unregister         # removes current city from supervisor
-gc stop               # unregisters current city (or suspends it)
+gc stop               # unregisters and stops the current city
 ```
 
 ### API access

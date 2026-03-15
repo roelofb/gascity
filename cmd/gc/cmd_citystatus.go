@@ -25,8 +25,9 @@ type StatusJSON struct {
 
 // ControllerJSON represents controller state in JSON output.
 type ControllerJSON struct {
-	Running bool `json:"running"`
-	PID     int  `json:"pid,omitempty"`
+	Running bool   `json:"running"`
+	PID     int    `json:"pid,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 }
 
 // StatusAgentJSON represents an agent in the JSON status output.
@@ -132,12 +133,8 @@ func doCityStatus(
 	// Header: city name and path.
 	fmt.Fprintf(stdout, "%s  %s\n", cityName, cityPath) //nolint:errcheck // best-effort stdout
 
-	// Controller status — determined by controller.sock liveness, not PID file.
-	if pid := controllerAlive(cityPath); pid != 0 {
-		fmt.Fprintf(stdout, "  Controller: running (PID %d)\n", pid) //nolint:errcheck // best-effort stdout
-	} else {
-		fmt.Fprintf(stdout, "  Controller: stopped\n") //nolint:errcheck // best-effort stdout
-	}
+	ctrl := controllerStatusForCity(cityPath)
+	fmt.Fprintf(stdout, "  Controller: %s\n", controllerStatusLine(ctrl)) //nolint:errcheck // best-effort stdout
 
 	// Suspended status.
 	if citySuspended(cfg) {
@@ -257,10 +254,7 @@ func doCityStatusJSON(
 	}
 
 	// Controller.
-	var ctrl ControllerJSON
-	if pid := controllerAlive(cityPath); pid != 0 {
-		ctrl = ControllerJSON{Running: true, PID: pid}
-	}
+	ctrl := controllerStatusForCity(cityPath)
 
 	// Agents.
 	var agents []StatusAgentJSON
@@ -355,4 +349,39 @@ func doCityStatusJSON(
 	}
 	fmt.Fprintln(stdout, string(data)) //nolint:errcheck // best-effort stdout
 	return 0
+}
+
+func controllerStatusForCity(cityPath string) ControllerJSON {
+	if pid := controllerAlive(cityPath); pid != 0 {
+		return ControllerJSON{Running: true, PID: pid, Mode: "standalone"}
+	}
+	_, registered, err := registeredCityEntry(cityPath)
+	if err == nil && registered {
+		ctrl := ControllerJSON{Mode: "supervisor"}
+		if pid := supervisorAliveHook(); pid != 0 {
+			ctrl.PID = pid
+			if running, known := supervisorCityRunning(cityPath); known {
+				ctrl.Running = running
+			} else {
+				ctrl.Running = true
+			}
+		}
+		return ctrl
+	}
+	return ControllerJSON{}
+}
+
+func controllerStatusLine(ctrl ControllerJSON) string {
+	switch ctrl.Mode {
+	case "supervisor":
+		if ctrl.Running {
+			return fmt.Sprintf("supervisor (PID %d)", ctrl.PID)
+		}
+		return "supervisor-managed (stopped)"
+	case "standalone":
+		if ctrl.Running {
+			return fmt.Sprintf("standalone (PID %d)", ctrl.PID)
+		}
+	}
+	return "stopped"
 }

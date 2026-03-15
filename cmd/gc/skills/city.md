@@ -12,17 +12,17 @@ gc init <path>                         # Initialize city at path
 ## Starting and stopping
 
 ```
-gc start                               # Start city (auto-inits if needed)
-gc start <path>                        # Start city at path
-gc start --foreground                  # Run as persistent controller
+gc start                               # Start city under the supervisor
+gc start <path>                        # Start city at path under the supervisor
+gc supervisor run                      # Run the supervisor in the foreground
 gc start --dry-run                     # Preview what would start
-gc stop                                # Stop all agent sessions
+gc stop                                # Stop the current city
 gc restart                             # Stop then start
 ```
 
-`gc start` starts fixed agents and reconciles pool-managed workers.
-Interactive sessions are created separately with `gc session new
-<template>`).
+`gc init` and `gc start` register the city with the machine supervisor,
+ensure it is running, and trigger an immediate reconcile. Interactive
+sessions are created separately with `gc session new <template>`.
 
 ## Status
 

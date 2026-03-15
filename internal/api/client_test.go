@@ -340,6 +340,54 @@ func TestClientGetService(t *testing.T) {
 	}
 }
 
+func TestClientListCities(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v0/cities" {
+			t.Fatalf("path = %q, want /v0/cities", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"items": []CityInfo{{
+				Name:    "bright-lights",
+				Path:    "/tmp/bright-lights",
+				Running: true,
+			}},
+			"total": 1,
+		})
+	}))
+	defer ts.Close()
+
+	c := NewClient(ts.URL)
+	items, err := c.ListCities()
+	if err != nil {
+		t.Fatalf("ListCities: %v", err)
+	}
+	if len(items) != 1 || items[0].Name != "bright-lights" || !items[0].Running {
+		t.Fatalf("items = %#v, want one running bright-lights city", items)
+	}
+}
+
+func TestCityScopedClientRewritesPaths(t *testing.T) {
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+			"items": []workspacesvc.Status{},
+			"total": 0,
+		})
+	}))
+	defer ts.Close()
+
+	c := NewCityScopedClient(ts.URL, "bright-lights")
+	if _, err := c.ListServices(); err != nil {
+		t.Fatalf("ListServices: %v", err)
+	}
+	if gotPath != "/v0/city/bright-lights/services" {
+		t.Fatalf("path = %q, want /v0/city/bright-lights/services", gotPath)
+	}
+}
+
 func TestClientKillSession(t *testing.T) {
 	var gotPath string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -188,17 +188,17 @@ func newStartCmd(stdout, stderr io.Writer) *cobra.Command {
 	var foregroundMode bool
 	cmd := &cobra.Command{
 		Use:   "start [path]",
-		Short: "Start the city (auto-initializes if needed)",
-		Long: `Start the city by launching all configured agent sessions.
+		Short: "Start the city under the machine-wide supervisor",
+		Long: `Start the city under the machine-wide supervisor.
 
 Auto-initializes the city if no .gc/ directory exists. Fetches remote
-packs, resolves providers, installs hooks, and starts agent sessions
-via one-shot reconciliation. Use --foreground for a persistent controller
-that continuously reconciles agent state.`,
+packs as needed, registers the city with the machine-wide supervisor,
+ensures the supervisor is running, and triggers immediate reconciliation.
+Use "gc supervisor run" for foreground operation.`,
 		Example: `  gc start
   gc start ~/my-city
-  gc start --foreground
-  gc start -f overlay.toml --no-strict`,
+  gc start --dry-run
+  gc supervisor run`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if doStart(args, foregroundMode, stdout, stderr) != 0 {
@@ -208,38 +208,76 @@ that continuously reconciles agent state.`,
 		},
 	}
 	cmd.Flags().BoolVar(&foregroundMode, "foreground", false,
-		"run as a persistent controller (reconcile loop)")
-	// Hidden backward-compat alias for --foreground.
+		"run the legacy per-city controller loop")
 	cmd.Flags().BoolVar(&foregroundMode, "controller", false,
 		"alias for --foreground")
+	cmd.Flags().MarkHidden("foreground") //nolint:errcheck // flag always exists
 	cmd.Flags().MarkHidden("controller") //nolint:errcheck // flag always exists
 	cmd.Flags().StringArrayVarP(&extraConfigFiles, "file", "f", nil,
 		"additional config files to layer (can be repeated)")
 	cmd.Flags().BoolVar(&noStrictMode, "no-strict", false,
 		"disable strict config collision checking (strict is on by default)")
+	cmd.Flags().MarkHidden("file")      //nolint:errcheck // flag always exists
+	cmd.Flags().MarkHidden("no-strict") //nolint:errcheck // flag always exists
 	cmd.Flags().BoolVarP(&dryRunMode, "dry-run", "n", false,
 		"preview what agents would start without starting them")
 	return cmd
 }
 
-// doStart boots the city. If a path is given, operates there; otherwise uses
-// cwd. If no city exists at the target, it auto-initializes one first via
-// doInit, then starts all configured agent sessions. When controllerMode is
-// true, enters a persistent reconciliation loop instead of one-shot start.
 func doStart(args []string, controllerMode bool, stdout, stderr io.Writer) int {
+	if controllerMode || dryRunMode {
+		return doStartStandalone(args, controllerMode, stdout, stderr)
+	}
+
+	dir, err := resolveStartDir(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "gc start: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+
+	if _, err := findCity(dir); err != nil {
+		doInit(fsys.OSFS{}, dir, defaultWizardConfig(), stdout, stderr)
+		prefix := config.DeriveBeadsPrefix(filepath.Base(dir))
+		initDirIfReady(dir, dir, prefix) //nolint:errcheck // best-effort bootstrap before supervisor starts
+	}
+
+	cityPath, err := findCity(dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "gc start: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+	if err := ensureCityScaffold(cityPath); err != nil {
+		fmt.Fprintf(stderr, "gc start: runtime scaffold: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+	if _, code := registerCityWithSupervisor(cityPath, stdout, stderr, "gc start"); code != 0 {
+		return code
+	}
+	fmt.Fprintln(stdout, "City started under supervisor.") //nolint:errcheck // best-effort stdout
+	return 0
+}
+
+func resolveStartDir(args []string) (string, error) {
+	switch {
+	case len(args) > 0:
+		return filepath.Abs(args[0])
+	case cityFlag != "":
+		return filepath.Abs(cityFlag)
+	default:
+		return os.Getwd()
+	}
+}
+
+// doStartStandalone boots the city. If a path is given, operates there;
+// otherwise uses cwd. If no city exists at the target, it auto-initializes
+// one first via doInit, then starts all configured agent sessions. When
+// controllerMode is true, enters a persistent reconciliation loop instead of
+// one-shot start.
+func doStartStandalone(args []string, controllerMode bool, stdout, stderr io.Writer) int {
 	// Strict mode is on by default; --no-strict disables it.
 	strictMode = !noStrictMode
 
-	var dir string
-	var err error
-	switch {
-	case len(args) > 0:
-		dir, err = filepath.Abs(args[0])
-	case cityFlag != "":
-		dir, err = filepath.Abs(cityFlag)
-	default:
-		dir, err = os.Getwd()
-	}
+	dir, err := resolveStartDir(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc start: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1

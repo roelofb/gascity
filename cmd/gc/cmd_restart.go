@@ -17,11 +17,11 @@ func newRestartCmd(stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart [path]",
 		Short: "Restart all agent sessions in the city",
-		Long: `Restart the city by stopping all agents then starting them again.
+		Long: `Restart the city by stopping it then starting it again.
 
-Equivalent to running "gc stop" followed by "gc start". Performs a
-full one-shot reconciliation after stopping, which re-reads city.toml
-and starts all configured agents.`,
+Equivalent to running "gc stop" followed by "gc start". Under supervisor
+mode this unregisters the city, then re-registers it and triggers an
+immediate reconcile.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if cmdRestart(args, stdout, stderr) != 0 {
@@ -32,7 +32,7 @@ and starts all configured agents.`,
 	}
 }
 
-// cmdRestart stops all agents then starts them again via one-shot reconcile.
+// cmdRestart stops the city, then re-starts it under the supervisor.
 func cmdRestart(args []string, stdout, stderr io.Writer) int {
 	if code := cmdStop(args, stdout, stderr); code != 0 {
 		return code

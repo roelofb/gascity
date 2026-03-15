@@ -33,20 +33,25 @@ func newSupervisorCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "supervisor",
 		Short: "Manage the machine-wide supervisor",
-		Long: `Manage the machine-wide supervisor daemon.
+		Long: `Manage the machine-wide supervisor.
 
 The supervisor manages all registered cities from a single process,
-hosting a unified API server. Use "gc register" to add cities.`,
+hosting a unified API server. Use "gc init", "gc start", or "gc register"
+to add cities.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
 	}
 	cmd.AddCommand(
+		newSupervisorRunCmd(stdout, stderr),
 		newSupervisorStartCmd(stdout, stderr),
 		newSupervisorStopCmd(stdout, stderr),
 		newSupervisorStatusCmd(stdout, stderr),
 		newSupervisorReloadCmd(stdout, stderr),
+		newSupervisorLogsCmd(stdout, stderr),
+		newSupervisorInstallCmd(stdout, stderr),
+		newSupervisorUninstallCmd(stdout, stderr),
 	)
 	return cmd
 }
@@ -54,15 +59,13 @@ hosting a unified API server. Use "gc register" to add cities.`,
 func newSupervisorStartCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the machine-wide supervisor (foreground)",
-		Long: `Start the machine-wide supervisor in the foreground.
+		Short: "Start the machine-wide supervisor in the background",
+		Long: `Start the machine-wide supervisor in the background.
 
-The supervisor reads ~/.gc/cities.toml for registered cities and
-~/.gc/supervisor.toml for configuration. It starts a CityRuntime
-for each registered city and hosts a single API server.`,
+This forks "gc supervisor run", verifies it became ready, and returns.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if runSupervisor(stdout, stderr) != 0 {
+			if doSupervisorStart(stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil

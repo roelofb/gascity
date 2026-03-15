@@ -100,7 +100,7 @@ The mapping between K8s and Gas City is surprisingly tight:
 | ConfigMap | Prompt template | Injected config that shapes behavior |
 | Namespace | Rig | Scoping / isolation boundary |
 | Node | Rig path | Physical location where work runs |
-| Controller loop | `gc start --controller` | Reconcile desired → actual |
+| Controller loop | `gc supervisor run` | Reconcile desired → actual |
 | etcd | Beads store | Persistent state |
 | kube-apiserver | controller.sock + city.toml | Declared desired state |
 

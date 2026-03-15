@@ -21,6 +21,16 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	gcHome, err := os.MkdirTemp("", "gascity-gc-home-*")
+	if err != nil {
+		panic(err)
+	}
+	runtimeDir, err := os.MkdirTemp("", "gascity-runtime-*")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("GC_HOME", gcHome)
+	os.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	testscript.Main(m, map[string]func(){
 		"gc": func() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) },
 		"bd": bdTestCmd,

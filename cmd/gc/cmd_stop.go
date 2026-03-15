@@ -67,6 +67,16 @@ func cmdStop(args []string, stdout, stderr io.Writer) int {
 		cityName = filepath.Base(cityPath)
 	}
 
+	if handled, code := unregisterCityFromSupervisor(cityPath, stdout, stderr, "gc stop"); handled {
+		if code != 0 {
+			return code
+		}
+		if supervisorAliveHook() != 0 {
+			fmt.Fprintln(stdout, "City stopped.") //nolint:errcheck // best-effort stdout
+			return 0
+		}
+	}
+
 	// If a controller is running, ask it to shut down (it stops agents).
 	if tryStopController(cityPath, stdout) {
 		// Controller handled the shutdown — still stop bead store below.

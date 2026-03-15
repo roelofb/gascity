@@ -215,18 +215,21 @@ func lookupService(cfg *config.City, name string) (config.Service, bool) {
 }
 
 func serviceReadClient(cityPath string, cfg *config.City) serviceStatusReader {
-	if controllerAlive(cityPath) == 0 || cfg.API.Port <= 0 {
-		return nil
+	if controllerAlive(cityPath) != 0 && cfg.API.Port > 0 {
+		bind := cfg.API.BindOrDefault()
+		switch bind {
+		case "0.0.0.0":
+			bind = "127.0.0.1"
+		case "::", "[::]":
+			bind = "::1"
+		}
+		baseURL := fmt.Sprintf("http://%s", net.JoinHostPort(bind, strconv.Itoa(cfg.API.Port)))
+		return api.NewClient(baseURL)
 	}
-	bind := cfg.API.BindOrDefault()
-	switch bind {
-	case "0.0.0.0":
-		bind = "127.0.0.1"
-	case "::", "[::]":
-		bind = "::1"
+	if client := supervisorCityAPIClient(cityPath); client != nil {
+		return client
 	}
-	baseURL := fmt.Sprintf("http://%s", net.JoinHostPort(bind, strconv.Itoa(cfg.API.Port)))
-	return api.NewClient(baseURL)
+	return nil
 }
 
 func publicationState(status workspacesvc.Status) string {

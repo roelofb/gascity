@@ -18,29 +18,28 @@ import (
 // the API when available, falling back to direct file mutation.
 func apiClient(cityPath string) *api.Client {
 	// Check if controller is alive.
-	if controllerAlive(cityPath) == 0 {
-		return nil
-	}
+	if controllerAlive(cityPath) != 0 {
+		// Load config to find API port.
+		tomlPath := filepath.Join(cityPath, "city.toml")
+		cfg, err := config.Load(fsys.OSFS{}, tomlPath)
+		if err != nil {
+			return nil
+		}
+		if cfg.API.Port <= 0 {
+			return nil
+		}
 
-	// Load config to find API port.
-	tomlPath := filepath.Join(cityPath, "city.toml")
-	cfg, err := config.Load(fsys.OSFS{}, tomlPath)
-	if err != nil {
-		return nil
-	}
-	if cfg.API.Port <= 0 {
-		return nil
-	}
+		// Non-localhost bind means API runs read-only — skip API routing
+		// (unless allow_mutations is set).
+		bind := cfg.API.BindOrDefault()
+		if bind != "127.0.0.1" && bind != "localhost" && bind != "::1" && !cfg.API.AllowMutations {
+			return nil
+		}
 
-	// Non-localhost bind means API runs read-only — skip API routing
-	// (unless allow_mutations is set).
-	bind := cfg.API.BindOrDefault()
-	if bind != "127.0.0.1" && bind != "localhost" && bind != "::1" && !cfg.API.AllowMutations {
-		return nil
+		baseURL := fmt.Sprintf("http://%s", net.JoinHostPort(bind, strconv.Itoa(cfg.API.Port)))
+		return api.NewClient(baseURL)
 	}
-
-	baseURL := fmt.Sprintf("http://%s", net.JoinHostPort(bind, strconv.Itoa(cfg.API.Port)))
-	return api.NewClient(baseURL)
+	return supervisorCityAPIClient(cityPath)
 }
 
 // resolveAgentForAPI resolves a bare agent name (e.g., "worker") to its
