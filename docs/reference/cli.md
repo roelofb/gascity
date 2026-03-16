@@ -56,6 +56,7 @@ gc [flags]
 | [gc suspend](#gc-suspend) | Suspend the city (all agents effectively suspended) |
 | [gc unregister](#gc-unregister) | Remove a city from the machine-wide supervisor |
 | [gc version](#gc-version) | Print gc version information |
+| [gc wait](#gc-wait) | Inspect and manage durable session waits |
 
 ## gc agent
 
@@ -1433,6 +1434,7 @@ gc session
 | [gc session prune](#gc-session-prune) | Close old suspended sessions |
 | [gc session rename](#gc-session-rename) | Rename a session |
 | [gc session suspend](#gc-session-suspend) | Suspend a session (save state, free resources) |
+| [gc session wait](#gc-session-wait) | Register a dependency wait for a session |
 | [gc session wake](#gc-session-wake) | Wake a session (clear hold and quarantine) |
 
 ## gc session attach
@@ -1606,6 +1608,21 @@ Accepts a session ID (e.g., gc-42) or template name (e.g., overseer).
 gc session suspend <session-id-or-name>
 ```
 
+## gc session wait
+
+Register a dependency wait for a session
+
+```
+gc session wait [session-id-or-name] [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--any` | bool |  | wake when any watched bead closes (default: all) |
+| `--note` | string |  | reminder text delivered when the wait is satisfied |
+| `--on-beads` | stringSlice |  | bead IDs to watch |
+| `--sleep` | bool |  | set wait hold so the session can drain to sleep |
+
 ## gc session wake
 
 Release a user hold and/or crash-loop quarantine on a session.
@@ -1651,16 +1668,23 @@ gc skill work       # beads command reference
 Route a bead to an agent or pool using the target's sling_query.
 
 The target is an agent qualified name (e.g. "mayor" or "hello-world/polecat").
-The second argument is a bead ID, or a formula name when --formula is set.
+The second argument is a bead ID, a formula name when --formula is set, or
+arbitrary text (which auto-creates a task bead).
 
 When target is omitted, the bead's rig prefix is used to look up the rig's
 default_sling_target from config. Requires --formula to have an explicit target.
+Inline text also requires an explicit target.
 
 With --formula, a wisp (ephemeral molecule) is instantiated from the formula
 and its root bead is routed to the target.
 
+Examples:
+  gc sling my-rig/claude BL-42              # route existing bead
+  gc sling my-rig/claude "write a README"   # create bead from text, then route
+  gc sling mayor code-review --formula      # instantiate formula, route wisp
+
 ```
-gc sling [target] <bead-or-formula> [flags]
+gc sling [target] <bead-or-formula-or-text> [flags]
 ```
 
 | Flag | Type | Default | Description |
@@ -1867,5 +1891,57 @@ When built with go install, VCS metadata is read from the binary.
 
 ```
 gc version
+```
+
+## gc wait
+
+Inspect and manage durable session waits
+
+```
+gc wait
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| [gc wait cancel](#gc-wait-cancel) | Cancel a wait |
+| [gc wait inspect](#gc-wait-inspect) | Show details for a wait |
+| [gc wait list](#gc-wait-list) | List durable waits |
+| [gc wait ready](#gc-wait-ready) | Manually mark a wait ready |
+
+## gc wait cancel
+
+Cancel a wait
+
+```
+gc wait cancel <wait-id>
+```
+
+## gc wait inspect
+
+Show details for a wait
+
+```
+gc wait inspect <wait-id>
+```
+
+## gc wait list
+
+List durable waits
+
+```
+gc wait list [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--session` | string |  | filter by session ID |
+| `--state` | string |  | filter by wait state |
+
+## gc wait ready
+
+Manually mark a wait ready
+
+```
+gc wait ready <wait-id>
 ```
 

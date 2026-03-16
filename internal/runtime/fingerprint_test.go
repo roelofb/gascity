@@ -3,7 +3,7 @@ package runtime
 import "testing"
 
 func TestConfigFingerprintDeterministic(t *testing.T) {
-	cfg := Config{Command: "claude --skip", Env: map[string]string{"A": "1", "B": "2"}}
+	cfg := Config{Command: "claude --skip", Env: map[string]string{"GC_A": "1", "GC_B": "2"}}
 	h1 := ConfigFingerprint(cfg)
 	h2 := ConfigFingerprint(cfg)
 	if h1 != h2 {
@@ -20,8 +20,8 @@ func TestConfigFingerprintDifferentCommand(t *testing.T) {
 }
 
 func TestConfigFingerprintDifferentEnv(t *testing.T) {
-	a := Config{Command: "claude", Env: map[string]string{"A": "1"}}
-	b := Config{Command: "claude", Env: map[string]string{"A": "2"}}
+	a := Config{Command: "claude", Env: map[string]string{"GC_FOO": "1"}}
+	b := Config{Command: "claude", Env: map[string]string{"GC_FOO": "2"}}
 	if ConfigFingerprint(a) == ConfigFingerprint(b) {
 		t.Error("different env values should produce different hashes")
 	}
@@ -30,10 +30,29 @@ func TestConfigFingerprintDifferentEnv(t *testing.T) {
 func TestConfigFingerprintEnvOrderIndependent(t *testing.T) {
 	// Go maps don't guarantee order, but we verify via two configs
 	// with the same key-value pairs that the hash is stable.
-	a := Config{Command: "claude", Env: map[string]string{"Z": "last", "A": "first", "M": "mid"}}
-	b := Config{Command: "claude", Env: map[string]string{"M": "mid", "A": "first", "Z": "last"}}
+	a := Config{Command: "claude", Env: map[string]string{"GC_Z": "last", "GC_A": "first", "GC_M": "mid"}}
+	b := Config{Command: "claude", Env: map[string]string{"GC_M": "mid", "GC_A": "first", "GC_Z": "last"}}
 	if ConfigFingerprint(a) != ConfigFingerprint(b) {
 		t.Error("env order should not affect hash")
+	}
+}
+
+func TestConfigFingerprintIgnoresNonGCEnv(t *testing.T) {
+	// Non-GC_ prefixed env vars (PATH, CLAUDECODE, OTel vars, etc.)
+	// should NOT affect the hash — they're ambient runtime details
+	// that differ between the gc init process and the supervisor.
+	a := Config{Command: "claude", Env: map[string]string{"GC_BEADS": "bd"}}
+	b := Config{Command: "claude", Env: map[string]string{
+		"GC_BEADS":                     "bd",
+		"PATH":                         "/usr/local/bin:/usr/bin",
+		"CLAUDECODE":                   "1",
+		"CLAUDE_CODE_ENTRYPOINT":       "/usr/bin/claude",
+		"BD_OTEL_METRICS_URL":          "http://localhost:4317",
+		"OTEL_RESOURCE_ATTRIBUTES":     "service.name=gc",
+		"CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+	}}
+	if ConfigFingerprint(a) != ConfigFingerprint(b) {
+		t.Error("non-GC_ prefixed env vars should not affect hash")
 	}
 }
 

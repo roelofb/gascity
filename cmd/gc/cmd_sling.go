@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,18 +44,25 @@ func newSlingCmd(stdout, stderr io.Writer) *cobra.Command {
 	var dryRun bool
 	var noFormula bool
 	cmd := &cobra.Command{
-		Use:   "sling [target] <bead-or-formula>",
+		Use:   "sling [target] <bead-or-formula-or-text>",
 		Short: "Route work to an agent or pool",
 		Long: `Route a bead to an agent or pool using the target's sling_query.
 
 The target is an agent qualified name (e.g. "mayor" or "hello-world/polecat").
-The second argument is a bead ID, or a formula name when --formula is set.
+The second argument is a bead ID, a formula name when --formula is set, or
+arbitrary text (which auto-creates a task bead).
 
 When target is omitted, the bead's rig prefix is used to look up the rig's
 default_sling_target from config. Requires --formula to have an explicit target.
+Inline text also requires an explicit target.
 
 With --formula, a wisp (ephemeral molecule) is instantiated from the formula
-and its root bead is routed to the target.`,
+and its root bead is routed to the target.
+
+Examples:
+  gc sling my-rig/claude BL-42              # route existing bead
+  gc sling my-rig/claude "write a README"   # create bead from text, then route
+  gc sling mayor code-review --formula      # instantiate formula, route wisp`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			if len(args) < 1 || len(args) > 2 {
@@ -158,6 +166,10 @@ func cmdSling(args []string, isFormula, doNudge, force bool, title string, vars 
 		fmt.Fprintf(stderr, "gc sling: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
+	// Ensure GC_DOLT_PORT is in the environment so bd subprocesses can
+	// connect to the managed dolt server. Without this, bd commands
+	// (create, assign, etc.) fail with circuit-breaker errors.
+	readDoltPort(cityPath)
 	cfg, _, err := config.LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"))
 	if err != nil {
 		fmt.Fprintf(stderr, "gc sling: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -173,6 +185,10 @@ func cmdSling(args []string, isFormula, doNudge, force bool, title string, vars 
 		beadOrFormula = args[0]
 		if isFormula {
 			fmt.Fprintf(stderr, "gc sling: --formula requires explicit target\n") //nolint:errcheck // best-effort stderr
+			return 1
+		}
+		if !looksLikeBeadID(beadOrFormula) {
+			fmt.Fprintf(stderr, "gc sling: inline text requires explicit target\n  usage: gc sling <target> %q\n", beadOrFormula) //nolint:errcheck // best-effort stderr
 			return 1
 		}
 		bp := beadPrefix(beadOrFormula)
@@ -204,6 +220,28 @@ func cmdSling(args []string, isFormula, doNudge, force bool, title string, vars 
 		cityName = filepath.Base(cityPath)
 	}
 
+	// Use the target agent's rig directory for the store so that mol
+	// operations (MolCook, MolCookOn) create beads in the correct rig
+	// database. City-scoped agents (no Dir) fall back to cityPath.
+	storeDir := cityPath
+	if rd := rigDirForAgent(cfg, a); rd != "" {
+		storeDir = rd
+	}
+	store := beads.NewBdStore(storeDir, beads.ExecCommandRunner())
+
+	// Inline text mode: if the argument doesn't look like a bead ID
+	// (and we're not in formula mode), create a task bead from the text.
+	// Skip during dry-run to avoid side effects.
+	if !isFormula && !dryRun && !looksLikeBeadID(beadOrFormula) {
+		created, err := store.Create(beads.Bead{Title: beadOrFormula, Type: "task"})
+		if err != nil {
+			fmt.Fprintf(stderr, "gc sling: creating bead: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
+		fmt.Fprintf(stdout, "Created %s — %q\n", created.ID, beadOrFormula) //nolint:errcheck // best-effort stdout
+		beadOrFormula = created.ID
+	}
+
 	opts := slingOpts{
 		Target:        a,
 		BeadOrFormula: beadOrFormula,
@@ -219,14 +257,6 @@ func cmdSling(args []string, isFormula, doNudge, force bool, title string, vars 
 		Force:         force,
 		DryRun:        dryRun,
 	}
-	// Use the target agent's rig directory for the store so that mol
-	// operations (MolCook, MolCookOn) create beads in the correct rig
-	// database. City-scoped agents (no Dir) fall back to cityPath.
-	storeDir := cityPath
-	if rd := rigDirForAgent(cfg, a); rd != "" {
-		storeDir = rd
-	}
-	store := beads.NewBdStore(storeDir, beads.ExecCommandRunner())
 	deps := slingDeps{
 		CityName: cityName,
 		CityPath: cityPath,
@@ -859,11 +889,35 @@ func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
 }
 
 // pokeController sends a "poke" command to the controller socket to
-// trigger an immediate reconciler tick. Returns an error if the socket
-// is unreachable (the next patrol tick will still catch the work).
+// trigger an immediate reconciler tick. If the per-city controller
+// socket doesn't exist (supervisor model), falls back to sending
+// "reload" to the supervisor socket.
 func pokeController(cityPath string) error {
 	_, err := sendControllerCommand(cityPath, "poke")
-	return err
+	if err == nil {
+		return nil
+	}
+	// Fall back to supervisor reload.
+	return pokeSupervisor()
+}
+
+// pokeSupervisor sends a "reload" command to the supervisor socket to
+// trigger immediate reconciliation of all managed cities.
+func pokeSupervisor() error {
+	sockPath := supervisorSocketPath()
+	conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("connecting to supervisor: %w", err)
+	}
+	defer conn.Close()                                     //nolint:errcheck
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))  //nolint:errcheck
+	if _, err := conn.Write([]byte("reload\n")); err != nil {
+		return fmt.Errorf("sending reload: %w", err)
+	}
+	buf := make([]byte, 64)
+	conn.Read(buf) //nolint:errcheck // best-effort ack
+	return nil
 }
 
 func buildSlingNudgeTarget(agent config.Agent, cityName, cityPath string, cfg *config.City, store beads.Store, sessionName string) nudgeTarget {
@@ -1184,6 +1238,28 @@ func printNudgePreview(w func(string), a config.Agent, cityName string,
 // (not the auto-generated default).
 func isCustomSlingQuery(a config.Agent) bool {
 	return a.SlingQuery != ""
+}
+
+// looksLikeBeadID reports whether s matches the bead ID pattern: one or more
+// ASCII letters, a dash, one or more digits (e.g. "BL-42", "gc-1").
+// Strings with spaces, missing dashes, or non-digit suffixes are treated as
+// inline text for ad-hoc bead creation.
+func looksLikeBeadID(s string) bool {
+	i := strings.Index(s, "-")
+	if i <= 0 || i == len(s)-1 {
+		return false
+	}
+	for _, c := range s[:i] {
+		if ('A' > c || c > 'Z') && ('a' > c || c > 'z') {
+			return false
+		}
+	}
+	for _, c := range s[i+1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // beadPrefix extracts the rig prefix from a bead ID by taking the lowercase

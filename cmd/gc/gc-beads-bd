@@ -60,18 +60,23 @@ connect_host() {
     fi
 }
 
-# tcp_check returns 0 if the dolt port is reachable.
-tcp_check() {
+# tcp_check_port returns 0 if the given port is reachable.
+tcp_check_port() {
+    local port="$1"
     local host
     host=$(connect_host)
     if command -v nc >/dev/null 2>&1; then
-        nc -z -w2 "$host" "$DOLT_PORT" 2>/dev/null
+        nc -z -w2 "$host" "$port" 2>/dev/null
     elif command -v bash >/dev/null 2>&1; then
-        bash -c "echo >/dev/tcp/$host/$DOLT_PORT" 2>/dev/null
+        bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null
     else
-        # Fallback: try a dolt sql query.
-        do_query_probe
+        return 1
     fi
+}
+
+# tcp_check returns 0 if the dolt port is reachable.
+tcp_check() {
+    tcp_check_port "$DOLT_PORT"
 }
 
 # do_query_probe runs a SELECT active_branch() query against the dolt server.
@@ -185,6 +190,7 @@ ensure_database_registered() {
 # save_state writes dolt-state.json atomically (no jq dependency).
 save_state() {
     local pid="$1" running="$2"
+    mkdir -p "$(dirname "$STATE_FILE")"
     local tmp
     tmp=$(mktemp "$STATE_FILE.tmp.XXXXXX")
     printf '{"running":%s,"pid":%s,"port":%s,"data_dir":"%s","started_at":"%s"}\n' \
@@ -427,7 +433,18 @@ allocate_port() {
         return
     fi
 
-    # 2. State file port with live PID.
+    # 2. Port file (written by write_port_file on start/init).
+    local port_file="$BEADS_DIR_ROOT/dolt-server.port"
+    if [ -f "$port_file" ]; then
+        local file_port
+        file_port=$(cat "$port_file" 2>/dev/null)
+        if [ -n "$file_port" ] && tcp_check_port "$file_port"; then
+            echo "$file_port"
+            return
+        fi
+    fi
+
+    # 3. State file port with live PID.
     if [ -f "$STATE_FILE" ]; then
         local state_port state_pid
         state_port=$(load_state_field port)
@@ -570,6 +587,24 @@ op_start() {
     # Hold lock for the duration of startup via exec (fd 9).
     exec 9>"$LOCK_FILE"
     flock -n 9 || die "could not acquire dolt start lock ($LOCK_FILE)"
+
+    # Check if a dolt process is already serving our data dir (any port).
+    # This prevents starting a second server that dies on database locks.
+    local existing_pid
+    existing_pid=$(find_dolt_pid)
+    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+        # Server already running. Use port from state file (most reliable)
+        # or the allocated port if state file is missing.
+        local existing_port
+        existing_port=$(load_state_field port)
+        if [ -n "$existing_port" ] && tcp_check_port "$existing_port"; then
+            DOLT_PORT="$existing_port"
+        fi
+        write_port_file "$GC_CITY_PATH/.beads"
+        echo "$existing_pid" > "$PID_FILE"
+        save_state "$existing_pid" true
+        exit 0
+    fi
 
     # Check if a process already holds the port.
     local holder
@@ -777,29 +812,10 @@ op_health() {
         die "dolt query probe failed (SELECT active_branch())"
     fi
 
-    # Imposter detection (local only): verify the process on our port is
-    # actually our server, not a rogue dolt started by bd auto-start.
-    # Gastown upstream does this in doltserver.Start() via VerifyServerDataDir
-    # + KillImposters. We do it here so health patrol catches imposters that
-    # appear between gc starts.
-    if ! is_remote; then
-        local holder
-        holder=$(find_port_holder)
-        if [ -n "$holder" ] && ! verify_our_server "$holder"; then
-            echo "imposter dolt server detected (PID $holder) — killing" >&2
-            kill_imposter "$holder"
-            die "killed imposter dolt server (PID $holder) on port $DOLT_PORT; recovery will restart the correct server"
-        fi
-    fi
-
-    # State file data-dir verification (local only).
-    if ! is_remote; then
-        local state_dir
-        state_dir=$(load_state_field data_dir)
-        if [ -n "$state_dir" ] && [ "$state_dir" != "$DATA_DIR" ]; then
-            die "dolt server data-dir mismatch: expected $DATA_DIR, state file says $state_dir"
-        fi
-    fi
+    # Imposter detection disabled: TCP + query probe passed, server is
+    # healthy. False-positive imposter kills (caused by inherited supervisor
+    # fds and stale state files) were actively harmful — killing the
+    # managed dolt server and losing all in-flight work.
 
     # Read-only detection (local only).
     if ! is_remote; then
@@ -955,37 +971,15 @@ else
     PACK_STATE_DIR="$GC_DIR/runtime/packs/dolt"
 fi
 
-# Current beads stores live under .beads/dolt. Keep reading legacy .gc data
-# dirs so older cities continue to work, but default all new runtime state to
-# the live beads repository location so bd init and the managed Dolt server
-# operate on the same database tree.
-CANONICAL_DATA_DIR="$BEADS_DIR_ROOT/dolt"
-LEGACY_PACK_DATA_DIR="$PACK_STATE_DIR/dolt-data"
-LEGACY_DATA_DIR="$GC_DIR/dolt-data"
-if [ -d "$CANONICAL_DATA_DIR" ]; then
-    DATA_DIR="$CANONICAL_DATA_DIR"
-elif [ ! -d "$PACK_STATE_DIR" ] && [ -d "$LEGACY_DATA_DIR" ]; then
-    DATA_DIR="$LEGACY_DATA_DIR"
-    LOG_FILE="$GC_DIR/dolt.log"
-    STATE_FILE="$GC_DIR/dolt-state.json"
-    PID_FILE="$GC_DIR/dolt.pid"
-    LOCK_FILE="$GC_DIR/dolt.lock"
-    CONFIG_FILE="$GC_DIR/dolt-config.yaml"
-elif [ -d "$LEGACY_PACK_DATA_DIR" ]; then
-    DATA_DIR="$LEGACY_PACK_DATA_DIR"
-    LOG_FILE="$PACK_STATE_DIR/dolt.log"
-    STATE_FILE="$PACK_STATE_DIR/dolt-state.json"
-    PID_FILE="$PACK_STATE_DIR/dolt.pid"
-    LOCK_FILE="$PACK_STATE_DIR/dolt.lock"
-    CONFIG_FILE="$PACK_STATE_DIR/dolt-config.yaml"
-else
-    DATA_DIR="$CANONICAL_DATA_DIR"
-    LOG_FILE="$PACK_STATE_DIR/dolt.log"
-    STATE_FILE="$PACK_STATE_DIR/dolt-state.json"
-    PID_FILE="$PACK_STATE_DIR/dolt.pid"
-    LOCK_FILE="$PACK_STATE_DIR/dolt.lock"
-    CONFIG_FILE="$PACK_STATE_DIR/dolt-config.yaml"
-fi
+# All data lives under .beads/dolt. Runtime state (logs, PID, lock)
+# lives under PACK_STATE_DIR.
+DATA_DIR="$BEADS_DIR_ROOT/dolt"
+mkdir -p "$DATA_DIR" "$PACK_STATE_DIR"
+LOG_FILE="$PACK_STATE_DIR/dolt.log"
+STATE_FILE="$PACK_STATE_DIR/dolt-state.json"
+PID_FILE="$PACK_STATE_DIR/dolt.pid"
+LOCK_FILE="$PACK_STATE_DIR/dolt.lock"
+CONFIG_FILE="$PACK_STATE_DIR/dolt-config.yaml"
 
 # Resolve DOLT_PORT now that STATE_FILE is set.
 DOLT_PORT=$(allocate_port)

@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	supervisorCityReadyTimeout = 5 * time.Second
+	supervisorCityReadyTimeout = 180 * time.Second
 	supervisorCityPollInterval = 100 * time.Millisecond
 )
 

@@ -200,15 +200,22 @@ func doRigAdd(fs fsys.FS, cityPath, rigPath, include string, startSuspended bool
 		w(fmt.Sprintf("  Include: %s", include))
 	}
 
-	// Initialize beads for the rig (ensure-ready → init → hooks).
-	// For bd provider, deferred to gc start (Dolt isn't running yet).
+	// Initialize beads for the rig. Try ensure-ready first (probes the
+	// backing service). If the probe fails (e.g. Dolt not yet ready),
+	// fall back to direct init — the city is likely already running and
+	// the probe script may just be checking the wrong state.
 	deferred, err := initDirIfReady(cityPath, rigPath, prefix)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc rig add: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
 	if deferred {
-		w("  Beads init deferred to gc start")
+		// City is probably running — try direct init.
+		if err := initAndHookDir(cityPath, rigPath, prefix); err != nil {
+			w("  Beads init deferred to controller")
+		} else {
+			w("  Initialized beads database")
+		}
 	} else {
 		w("  Initialized beads database")
 	}
@@ -268,6 +275,12 @@ func doRigAdd(fs fsys.FS, cityPath, rigPath, include string, startSuspended bool
 		return 1
 	}
 	w("  Generated routes.jsonl for cross-rig routing")
+
+	// Poke controller after config is committed so it picks up
+	// deferred beads init and implicit agents for the new rig.
+	// Best-effort — if the controller isn't running (no socket),
+	// the next patrol tick or gc start will pick it up.
+	_ = pokeController(cityPath)
 
 	switch {
 	case reAdd:

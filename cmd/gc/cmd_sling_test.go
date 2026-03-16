@@ -574,7 +574,7 @@ func TestTargetType(t *testing.T) {
 
 func TestNewSlingCmdArgs(t *testing.T) {
 	cmd := newSlingCmd(&bytes.Buffer{}, &bytes.Buffer{})
-	if cmd.Use != "sling [target] <bead-or-formula>" {
+	if cmd.Use != "sling [target] <bead-or-formula-or-text>" {
 		t.Errorf("Use = %q", cmd.Use)
 	}
 	// Verify flags exist.
@@ -3124,5 +3124,52 @@ func TestOneArgSlingFormulaRequiresTarget(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected error for --formula with 1 arg")
+	}
+}
+
+func TestLooksLikeBeadID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		// Valid bead IDs.
+		{"BL-42", true},
+		{"gc-1", true},
+		{"HW-7", true},
+		{"FE-123", true},
+		{"abc-0", true},
+
+		// Inline text (not bead IDs).
+		{"write a README", false},
+		{"write README", false},
+		{"hello world", false},
+		{"fix the bug", false},
+
+		// Edge cases — not bead IDs.
+		{"", false},
+		{"nodash", false},
+		{"-1", false},
+		{"42-abc", false},      // digits before dash
+		{"BL-", false},         // nothing after dash
+		{"BL-abc", false},      // letters after dash
+		{"BL-42a", false},      // mixed after dash
+		{"code-review", false}, // letters after dash (formula name)
+		{"hello-world", false}, // letters after dash
+	}
+	for _, tt := range tests {
+		got := looksLikeBeadID(tt.input)
+		if got != tt.want {
+			t.Errorf("looksLikeBeadID(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestOneArgSlingInlineTextRequiresTarget(t *testing.T) {
+	// Inline text with 1 arg should error asking for explicit target.
+	cmd := newSlingCmd(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"write a README"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for inline text with 1 arg")
 	}
 }

@@ -317,6 +317,14 @@ func reconcileSessionBeads(
 				startCtx, startCancel = context.WithTimeout(ctx, startupTimeout)
 			}
 			agentCfg := templateParamsToConfig(tp)
+
+			// Compute config fingerprint BEFORE applying session-specific
+			// command modifications (session key, resume flag). The stored
+			// hash must match the drift-detection hash, which uses the
+			// unmodified templateParamsToConfig output.
+			coreHash := runtime.CoreFingerprint(agentCfg)
+			liveHash := runtime.LiveFingerprint(agentCfg)
+
 			// Bead work_dir overrides config-derived WorkDir (agent may
 			// have updated it, e.g. after creating a git worktree).
 			// Priority: task bead work_dir > session bead work_dir > config.
@@ -372,9 +380,8 @@ func reconcileSessionBeads(
 				Subject: tp.DisplayName(),
 			})
 
-			// Store config fingerprint after successful start.
-			coreHash := runtime.CoreFingerprint(agentCfg)
-			liveHash := runtime.LiveFingerprint(agentCfg)
+			// Store config fingerprint using the pre-computed hashes
+			// (from unmodified agentCfg above).
 			if err := store.SetMetadataBatch(session.ID, map[string]string{
 				"config_hash":         coreHash,
 				"started_config_hash": coreHash,

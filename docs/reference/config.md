@@ -220,11 +220,7 @@ DaemonConfig holds controller daemon settings.
 | `wisp_ttl` | string |  |  | WispTTL is how long a closed molecule survives before being purged. Duration string (e.g., "24h", "7d"). Wisp GC is disabled unless both WispGCInterval and WispTTL are set. |
 | `drift_drain_timeout` | string |  | `2m` | DriftDrainTimeout is the maximum time to wait for an agent to acknowledge a drain signal during a config-drift restart. If the agent doesn't ack within this window, the controller force-kills and restarts it. Duration string (e.g., "2m", "5m"). Defaults to "2m". |
 | `observe_paths` | []string |  |  | ObservePaths lists extra directories to search for Claude JSONL session files (e.g., aimux session paths). The default search path (~/.claude/projects/) is always included. |
-<<<<<<< HEAD
-| `bead_reconciler` | boolean |  | `true` | BeadReconciler enables the bead-driven session reconciler (Phase 2f). When true, session lifecycle is managed through bead state with dependency-aware wake ordering, config drift detection, and crash quarantine. Defaults to true when omitted. When false, the legacy reconciler is used. |
-=======
-| `bead_reconciler` | boolean |  | `true` | BeadReconciler enables the bead-driven session reconciler (Phase 2f). When true, session lifecycle is managed through bead state with dependency-aware wake ordering, config drift detection, and crash quarantine. When false, the legacy reconciler is used. |
->>>>>>> 5071f8e0 (feat: add durable session waits)
+| `bead_reconciler` | boolean |  | `true` | BeadReconciler enables the bead-driven session reconciler (Phase 2f). When true, session lifecycle is managed through bead state with dependency-aware wake ordering, config drift detection, and crash quarantine. Defaults to true when omitted. Set false to force the legacy reconciler. |
 
 ## DoltConfig
 
@@ -512,3 +508,4 @@ Workspace holds city-level metadata and optional defaults that apply to all agen
 | `install_agent_hooks` | []string |  |  | InstallAgentHooks lists provider names whose hooks should be installed into agent working directories. Agent-level overrides workspace-level (replace, not additive). Supported: "claude", "codex", "gemini", "opencode", "copilot", "cursor", "pi", "omp". |
 | `global_fragments` | []string |  |  | GlobalFragments lists named template fragments injected into every agent's rendered prompt. Applied before per-agent InjectFragments. Each name must match a {{ define "name" }} block from a pack's prompts/shared/ directory. |
 | `includes` | []string |  |  | Includes lists pack directories or URLs to compose into this workspace. Replaces the older pack/packs fields. Each entry is a local path, a git source//sub#ref URL, or a GitHub tree URL. |
+

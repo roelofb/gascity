@@ -265,13 +265,30 @@ func runProviderProbe(script, cityPath string) bool {
 	return cmd.Run() == nil
 }
 
+// providerOpTimeout returns the context timeout for a given lifecycle
+// operation. The "start" and "ensure-ready" operations get a longer
+// timeout because dolt server startup can take 30+ seconds for large
+// data dirs. All other operations use 30s.
+func providerOpTimeout(op string) time.Duration {
+	switch op {
+	case "start", "ensure-ready", "recover":
+		return 120 * time.Second
+	default:
+		return 30 * time.Second
+	}
+}
+
 // runProviderOp runs a lifecycle operation against an exec beads script.
 // Exit 2 = not needed (treated as success, no-op). Used for start,
 // ensure-ready, init, health, recover, stop, and shutdown operations.
 // cityPath is set as GC_CITY_PATH in the subprocess environment so scripts
 // can locate the city root.
 func runProviderOp(script, cityPath string, args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	op := ""
+	if len(args) > 0 {
+		op = args[0]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), providerOpTimeout(op))
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, script, args...)
