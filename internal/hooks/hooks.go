@@ -7,6 +7,8 @@ package hooks
 import (
 	"embed"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -16,6 +18,16 @@ import (
 
 //go:embed config/*
 var configFS embed.FS
+
+var resolveGCBinary = func() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	if path, err := exec.LookPath("gc"); err == nil && path != "" {
+		return path
+	}
+	return "gc"
+}
 
 // supported lists provider names that have hook support.
 var supported = []string{"claude", "codex", "gemini", "opencode", "copilot", "cursor", "pi", "omp"}
@@ -101,7 +113,12 @@ func installClaude(fs fsys.FS, cityDir string) error {
 // installGemini writes .gemini/settings.json in the working directory.
 func installGemini(fs fsys.FS, workDir string) error {
 	dst := filepath.Join(workDir, ".gemini", "settings.json")
-	return writeEmbedded(fs, "config/gemini.json", dst)
+	data, err := readEmbedded("config/gemini.json")
+	if err != nil {
+		return err
+	}
+	data = []byte(strings.ReplaceAll(string(data), "{{GC_BIN}}", resolveGCBinary()))
+	return writeEmbeddedManaged(fs, dst, data, geminiFileNeedsUpgrade)
 }
 
 // installCodex writes .codex/hooks.json in the working directory.
@@ -147,14 +164,29 @@ func installOmp(fs fsys.FS, workDir string) error {
 // writeEmbedded reads an embedded file and writes it to dst, creating parent
 // directories as needed. Skips if dst already exists.
 func writeEmbedded(fs fsys.FS, embedPath, dst string) error {
-	// Idempotent: skip if file exists.
-	if _, err := fs.Stat(dst); err == nil {
-		return nil
+	data, err := readEmbedded(embedPath)
+	if err != nil {
+		return err
 	}
+	return writeEmbeddedManaged(fs, dst, data, nil)
+}
 
+func readEmbedded(embedPath string) ([]byte, error) {
 	data, err := configFS.ReadFile(embedPath)
 	if err != nil {
-		return fmt.Errorf("reading embedded %s: %w", embedPath, err)
+		return nil, fmt.Errorf("reading embedded %s: %w", embedPath, err)
+	}
+	return data, nil
+}
+
+func writeEmbeddedManaged(fs fsys.FS, dst string, data []byte, needsUpgrade func([]byte) bool) error {
+	if existing, err := fs.ReadFile(dst); err == nil {
+		if needsUpgrade == nil || !needsUpgrade(existing) {
+			return nil
+		}
+	} else if _, statErr := fs.Stat(dst); statErr == nil {
+		// File exists but isn't readable. Preserve it rather than clobbering it.
+		return nil
 	}
 
 	dir := filepath.Dir(dst)
@@ -166,4 +198,15 @@ func writeEmbedded(fs fsys.FS, embedPath, dst string) error {
 		return fmt.Errorf("writing %s: %w", dst, err)
 	}
 	return nil
+}
+
+func geminiFileNeedsUpgrade(existing []byte) bool {
+	content := string(existing)
+	if !strings.Contains(content, `export PATH=`) {
+		return false
+	}
+	return strings.Contains(content, `gc prime --hook`) ||
+		strings.Contains(content, `gc nudge drain --inject`) ||
+		strings.Contains(content, `gc mail check --inject`) ||
+		strings.Contains(content, `gc hook --inject`)
 }

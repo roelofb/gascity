@@ -81,6 +81,10 @@ func TestInstallClaude(t *testing.T) {
 }
 
 func TestInstallGemini(t *testing.T) {
+	oldResolve := resolveGCBinary
+	resolveGCBinary = func() string { return "/usr/local/bin/gc" }
+	t.Cleanup(func() { resolveGCBinary = oldResolve })
+
 	fs := fsys.NewFake()
 	err := Install(fs, "/city", "/work", []string{"gemini"})
 	if err != nil {
@@ -95,6 +99,12 @@ func TestInstallGemini(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "BeforeAgent") {
 		t.Error("gemini settings should contain BeforeAgent hook")
+	}
+	if !strings.Contains(string(data), "/usr/local/bin/gc prime --hook") {
+		t.Error("gemini settings should use resolved gc binary path")
+	}
+	if strings.Contains(string(data), "export PATH=") {
+		t.Error("gemini settings should not use PATH export pattern")
 	}
 }
 
@@ -200,6 +210,55 @@ func TestInstallIdempotent(t *testing.T) {
 	got := string(fs.Files["/city/hooks/claude.json"])
 	if got != `{"custom": true}` {
 		t.Errorf("Install overwrote existing file: got %q", got)
+	}
+}
+
+func TestInstallGeminiUpgradesStaleGeneratedFile(t *testing.T) {
+	oldResolve := resolveGCBinary
+	resolveGCBinary = func() string { return "/opt/gc/bin/gc" }
+	t.Cleanup(func() { resolveGCBinary = oldResolve })
+
+	fs := fsys.NewFake()
+	fs.Files["/work/.gemini/settings.json"] = []byte(`{
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "export PATH=\"$HOME/go/bin:$HOME/.local/bin:$PATH\" && gc prime --hook"
+      }]
+    }]
+  }
+}`)
+
+	if err := Install(fs, "/city", "/work", []string{"gemini"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	got := string(fs.Files["/work/.gemini/settings.json"])
+	if !strings.Contains(got, "/opt/gc/bin/gc prime --hook") {
+		t.Errorf("upgraded gemini settings missing resolved gc path:\n%s", got)
+	}
+	if strings.Contains(got, "export PATH=") {
+		t.Errorf("upgraded gemini settings still use PATH export:\n%s", got)
+	}
+}
+
+func TestInstallGeminiPreservesExistingCustomFile(t *testing.T) {
+	oldResolve := resolveGCBinary
+	resolveGCBinary = func() string { return "/opt/gc/bin/gc" }
+	t.Cleanup(func() { resolveGCBinary = oldResolve })
+
+	fs := fsys.NewFake()
+	custom := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"custom-hook"}]}]}}`
+	fs.Files["/work/.gemini/settings.json"] = []byte(custom)
+
+	if err := Install(fs, "/city", "/work", []string{"gemini"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	got := string(fs.Files["/work/.gemini/settings.json"])
+	if got != custom {
+		t.Errorf("Install overwrote custom gemini settings: got %q want %q", got, custom)
 	}
 }
 
