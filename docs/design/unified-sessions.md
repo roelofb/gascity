@@ -162,20 +162,22 @@ undone by the next reconciler tick seeing `WakeConfig`.
 ```bash
 $ gc session sleep gc-1                # holds indefinitely
 $ gc session sleep gc-1 --for 30m      # holds for 30 minutes
-$ gc session wake gc-1                 # releases hold AND quarantine, wakes
+$ gc session wake gc-1                 # releases hold, wait-hold, sleep-intent, and quarantine; wakes
 ```
 
 The `gc session sleep` handler sets both `held_until` and
-`sleep_reason = "user-hold"` in one batched write, then begins
-an async drain if the session is alive.
+`sleep_intent = "user-hold"` in one batched write, then begins an async
+drain if the session is alive. `sleep_reason = "user-hold"` is written
+only when the drain completes and the session is actually asleep.
 
 The hold is a timestamp, not a boolean. `held_until = "9999-12-31T..."`
 means indefinite hold. A past timestamp means the hold has expired and
 wake reasons apply normally. The reconciler checks `held_until` before
 computing wake reasons.
 
-User holds are distinct from pool suppression — `gc session wake` only
-clears user holds and quarantine, not pool-computed desiredness. See
+User holds are distinct from pool suppression — `gc session wake` clears
+user hold, wait hold, sleep intent, and quarantine, but not
+pool-computed desiredness. See
 [Pool integration](#pool-integration).
 
 {/* REVIEW: added per Blocker 7 — gc session wake clears BOTH hold AND quarantine consistently */}
@@ -238,19 +240,25 @@ conversation or starts with a clean context window:
   runtime process gets a clean context window. Best for coding workers
   that should approach each task without stale assumptions.
 
-This directly supports the Gas Town polecat pattern: ephemeral coding
-agents that get fresh context for each task. The slot identity is
-stable (worker-3 is always worker-3), but the conversation is not
-carried forward.
+Fresh mode supports the Gas Town polecat pattern only when the session
+can actually lose all wake reasons between tasks. Provider-preset
+workers and future work-driven lifecycles can do that directly.
+In-count config/pool workers do **not** idle-sleep under current Phase 2
+semantics because `WakeConfig` keeps them desired-awake; they need a
+separate suppressor such as `wait_hold`, user hold, or pool excess to
+quiesce. The slot identity is stable (worker-3 is always worker-3), but
+the conversation is not carried forward across actual sleep/wake
+boundaries.
 
-**Polecat lifecycle:** A fresh-mode worker wakes, processes its hooked
-work, completes, goes idle, and sleeps via idle timeout. The next
-dispatch wakes it with a clean context. The worker does NOT need to
-self-terminate after each task — the normal idle-timeout → sleep →
-fresh-wake cycle handles context rotation. This avoids false crash-loop
-dampening triggers. If a worker processes multiple tasks within a single
-waking period, they share context; fresh context resets only across
-sleep/wake boundaries. For strict per-task isolation, configure a short
+**Polecat lifecycle:** When a fresh-mode worker does lose all wake
+reasons, it wakes, processes its hooked work, completes, goes idle, and
+sleeps via idle timeout. The next dispatch wakes it with a clean
+context. The worker does NOT need to self-terminate after each task —
+the normal idle-timeout → sleep → fresh-wake cycle handles context
+rotation. This avoids false crash-loop dampening triggers. If a worker
+processes multiple tasks within a single waking period, they share
+context; fresh context resets only across sleep/wake boundaries. For
+strict per-task isolation, configure a short
 `idle_timeout` so the worker sleeps promptly after completing work.
 
 Pool desiredness is purely computed: `wakeReasons()` checks whether this
@@ -280,16 +288,19 @@ Bead {
         "pool_slot":     "2"                  // pool slot (0 for non-pool)
         "pool_template": "worker"             // parent template (pool only)
 
-        // Wake behavior (1 field — synced from config each tick, mutable)
-        "wake_mode":     "resume"             // "resume" | "fresh"
+        // Wake behavior and conversation identity (2 fields)
+        "wake_mode":           "resume"       // "resume" | "fresh"
+        "continuation_epoch":  "7"            // increments only when conversation identity changes
 
         // State — advisory, healed each tick, never branched on (3 fields)
         "state":         "awake" | "asleep"
         "slept_at":      RFC3339
-        "sleep_reason":  "idle" | "user-hold" | "quarantine" | ...
+        "sleep_reason":  "idle" | "user-hold" | "wait-hold" | "quarantine" | ...
 
-        // User hold — distinct from pool desiredness (1 field)
-        "held_until":    RFC3339 | ""         // empty = no hold
+        // Wake suppression / sleep intent (3 fields)
+        "held_until":    RFC3339 | ""         // empty = no user hold
+        "wait_hold":     "true" | ""          // empty = no wait hold
+        "sleep_intent":  "user-hold" | "wait-hold" | "" // durable "drain ASAP" marker
 
         // Crash-loop dampening (3 fields)
         "wake_attempts":      "3"             // consecutive failed/unstable wakes
@@ -334,15 +345,15 @@ responses and event payloads. See [Runtime targeting](#runtime-targeting-and-exe
 
 | New System | Fields |
 |---|---|
-| session bead metadata | 18 fields in one unified store |
+| session bead metadata | 21 fields in one unified store |
 | secrets file | session_key (1 field, external) |
 | in-memory reconciler state | drainState map (2 fields per draining session), worker pool state |
-| **Total (one system)** | **~21 fields in one system** |
+| **Total (one system)** | **~24 fields in one system** |
 
 The new system has ~50% more fields but eliminates the *second system
-entirely*. The additional fields are: pool identity (2), user hold (1),
-generation (1), instance_token (1), sleep_reason (1), last_woke_at (1),
-wake_mode (1).
+entirely*. The additional fields are: pool identity (2), wake suppression
+and intent (3), conversation fence (1), generation (1), instance_token
+(1), sleep_reason (1), last_woke_at (1), wake_mode (1).
 The win is model unification, not field-count reduction.
 
 {/* REVIEW: updated per Blocker 6 — field count adjusted for session_key move and instance_token addition */}
@@ -368,14 +379,15 @@ Sessions have two **public states** with orthogonal modifiers:
 type SessionStatus struct {
     State          string      `json:"state"`           // always "awake" or "asleep"
     DesiredAwake   bool        `json:"desired_awake"`   // true if wake reasons exist
-    WakeReasons    []string    `json:"wake_reasons"`    // e.g., ["config"], ["work","attached"]
+    WakeReasons    []string    `json:"wake_reasons"`    // e.g., ["config"], ["wait","work"]
     BlockedReasons []string    `json:"blocked_reasons"` // e.g., ["pool","dependency"]
-    SleepReason    string      `json:"sleep_reason"`    // why asleep: "idle","user-hold","quarantine",...
+    SleepReason    string      `json:"sleep_reason"`    // why asleep: "idle","user-hold","wait-hold","quarantine",...
     HeldUntil      *time.Time  `json:"held_until"`      // nil if no hold
+    WaitHold       bool        `json:"wait_hold"`       // suppresses config/attached only
     QuarantinedUntil *time.Time `json:"quarantined_until"` // nil if no quarantine
     WakeAttempts   int         `json:"wake_attempts"`   // consecutive failed wakes
     Draining       bool        `json:"draining"`        // true if drain in progress
-    DrainReason    string      `json:"drain_reason"`    // "idle","pool-excess","config-drift","user-sleep" (empty if not draining)
+    DrainReason    string      `json:"drain_reason"`    // "idle","pool-excess","config-drift","user-sleep","wait-sleep" (empty if not draining)
 }
 // {/* REVIEW: Round 2 fix — drain_reason added to public status */}
 ```
@@ -427,6 +439,7 @@ type WakeReason string
 
 const (
     WakeConfig   WakeReason = "config"    // [[agent]] entry exists (per-instance for pools)
+    WakeWait     WakeReason = "wait"      // has a ready wait targeting this continuation
     WakeAttached WakeReason = "attached"  // user terminal connected
     WakeWork     WakeReason = "work"      // has hooked/open beads
 )
@@ -435,7 +448,14 @@ const (
 // PURE FUNCTION — reads only, never writes metadata.
 // poolDesired is the per-tick snapshot from evaluatePoolCached().
 // Returns nil if the session should be asleep.
-func wakeReasons(session bead, cfg config.City, sp runtime.Provider, poolDesired map[string]int) []WakeReason {
+func wakeReasons(
+    session bead,
+    cfg config.City,
+    sp runtime.Provider,
+    poolDesired map[string]int,
+    readyWaitSet map[string]bool,
+    hookedWorkSet map[string]bool,
+) []WakeReason {
     // User hold suppresses all reasons
     if held := session.Metadata["held_until"]; held != "" {
         if t, err := time.Parse(time.RFC3339, held); err == nil && time.Now().Before(t) {
@@ -453,47 +473,69 @@ func wakeReasons(session bead, cfg config.City, sp runtime.Provider, poolDesired
     }
 
     var reasons []WakeReason
+    waitHold := session.Metadata["wait_hold"] != ""
 
-    // Config presence — per-instance for pools
-    template := session.Metadata["template"]
-    if agent, ok := cfg.FindAgent(template); ok {
-        if agent.Pool == nil {
-            reasons = append(reasons, WakeConfig)
-        } else {
-            // Pool: only wake if slot is within desired count (cached per tick)
-            slot, _ := strconv.Atoi(session.Metadata["pool_slot"])
-            desired := poolDesired[template]  // from per-tick snapshot
-            if slot > 0 && slot <= desired {
-                reasons = append(reasons, WakeConfig)
-            }
-        }
+    if readyWaitSet[session.ID] {
+        reasons = append(reasons, WakeWait)
     }
 
-    // User attached — only if provider supports it.
-    // IsAttached uses context deadline (2s) and tri-state return.
-    // ProbeUnknown is treated as "not attached" (conservative).
-    if sp.Capabilities().CanReportAttachment {
-        ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-        defer cancel()
-        if sp.IsAttached(ctx, session.Metadata["session_name"]) == ProbeAlive {
-            reasons = append(reasons, WakeAttached)
+    if hookedWorkSet[session.ID] {
+        reasons = append(reasons, WakeWork)
+    }
+
+    // wait_hold suppresses standing presence/attachment wakeups but does NOT
+    // suppress ready waits or hooked work.
+    if !waitHold {
+        // Config presence — per-instance for pools
+        template := session.Metadata["template"]
+        if agent, ok := cfg.FindAgent(template); ok {
+            if agent.Pool == nil {
+                reasons = append(reasons, WakeConfig)
+            } else {
+                // Pool: only wake if slot is within desired count (cached per tick)
+                slot, _ := strconv.Atoi(session.Metadata["pool_slot"])
+                desired := poolDesired[template]  // from per-tick snapshot
+                if slot > 0 && slot <= desired {
+                    reasons = append(reasons, WakeConfig)
+                }
+            }
+        }
+
+        // User attached — only if provider supports it.
+        // IsAttached uses context deadline (2s) and tri-state return.
+        // ProbeUnknown is treated as "not attached" (conservative).
+        if sp.Capabilities().CanReportAttachment {
+            ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+            defer cancel()
+            if sp.IsAttached(ctx, session.Metadata["session_name"]) == ProbeAlive {
+                reasons = append(reasons, WakeAttached)
+            }
         }
     }
     // {/* REVIEW: Round 4 fix — IsAttached uses context + tri-state */}
 
-    // Phase 4: Hooked work — deferred until work-driven wake ships.
-    // When enabled, sessions with open hooked beads stay awake even
-    // if they lose WakeConfig (e.g., pool scale-down). Until Phase 4,
-    // pool-excess instances drain even with hooked work — the sling
-    // handler emits EventWorkSlungToBlockedSession for operator mitigation.
-    //
-    // if hasHookedWork(session.ID) {
-    //     reasons = append(reasons, WakeWork)
-    // }
-
     return reasons
 }
 ```
+
+`continuation_epoch` is the durable conversation-identity fence that
+waits and other resumable continuations bind to. It starts at `1` when a
+session bead is created and increments only when the next wake will not
+resume the same conversation:
+
+- `wake_mode=fresh`
+- explicit session reset
+- controller-observed session-key reset/rotation
+- any future provider-specific "start new conversation" operation
+
+It does **not** change on ordinary idle sleep/wake, user-hold release,
+quarantine expiry, pool scale-up/down, or controller restart.
+
+`generation` and `continuation_epoch` are intentionally different:
+
+- `generation` fences one running process incarnation and increments on every wake
+- `continuation_epoch` fences one conversation identity and increments only on conversation resets
+- async nudge drainers consume `generation` as `GC_RUNTIME_EPOCH`; there is no separate persisted `runtime_epoch` field
 
 ### Liveness predicate
 
@@ -675,22 +717,33 @@ func reconcile(sessions []bead, cfg config.City, sp runtime.Provider) {
     }
     // {/* REVIEW: Round 4 fix — poolDesired stores post-hysteresis applied count */}
 
+    // Phase 2pre: Prepare wait-driven wake state.
+    // If the wait subsystem is enabled, this phase:
+    //   - consumes terminal gc:nudge bead states that close/cancel waits
+    //   - clears stale wait_hold without live non-terminal waits
+    //   - clears wait_hold + sleep_intent=wait-hold for sessions already
+    //     in ready state at scan time
+    //   - builds readyWaitSet for wakeReasons()
+    readyWaitSet := prepareWaitWakeState(allSessions)
+    hookedWorkSet := computeHookedWorkSet()
+
     // Phase 2a: Wake pass (forward dependency order — dependencies first).
     // Compute intent synchronously, dispatch provider I/O to worker pool.
     // All probe calls use context deadlines and tri-state results.
     wakeOrder := topoOrder(allSessionBeads(), cfg.DependsOn)
     wakesBudget := maxWakesPerTick  // default: 5
+    waitPhaseReservation := 500 * time.Millisecond
     tickCtx, tickCancel := context.WithTimeout(context.Background(), tickBudget)
     defer tickCancel()
 
     for _, session := range wakeOrder {
         // Wall-clock budget: defer remaining work to next tick
-        if clock.Since(tickStart) > tickBudget {  // default: 5s
+        if clock.Since(tickStart) > tickBudget-waitPhaseReservation {  // default: 5s total, reserve 500ms for Phase 2c
             emit(EventTickBudgetExhausted, clock.Since(tickStart))
             break
         }
 
-        reasons := wakeReasons(session, cfg, sp, poolDesired)
+        reasons := wakeReasons(session, cfg, sp, poolDesired, readyWaitSet, hookedWorkSet)
         probeResult := isAlive(tickCtx, session, sp)
         if probeResult == ProbeUnknown {
             emit(EventProbeTimeout, session.ID, session.Metadata["session_name"])
@@ -764,12 +817,12 @@ func reconcile(sessions []bead, cfg config.City, sp runtime.Provider) {
     sleepOrder := reverse(wakeOrder)
     for _, session := range sleepOrder {
         // Wall-clock budget check
-        if clock.Since(tickStart) > tickBudget {
+        if clock.Since(tickStart) > tickBudget-waitPhaseReservation {
             emit(EventTickBudgetExhausted, clock.Since(tickStart))
             break
         }
 
-        reasons := wakeReasons(session, cfg, sp, poolDesired)
+        reasons := wakeReasons(session, cfg, sp, poolDesired, readyWaitSet, hookedWorkSet)
         probeResult := isAlive(tickCtx, session, sp)
         if probeResult == ProbeUnknown {
             continue  // skip — cannot determine liveness
@@ -777,8 +830,12 @@ func reconcile(sessions []bead, cfg config.City, sp runtime.Provider) {
         alive := probeResult == ProbeAlive
 
         if len(reasons) == 0 && alive && !isDraining(session) {
-            // Pool excess: drain immediately, don't wait for idle timeout.
-            if isPoolExcess(session, cfg, poolDesired) {
+            // A persisted sleep_intent requests "drain ASAP" and survives
+            // controller crash between setting a hold and starting the drain.
+            if session.Metadata["sleep_intent"] != "" {
+                beginDrain(session, sp, session.Metadata["sleep_intent"])
+            } else if isPoolExcess(session, cfg, poolDesired) {
+                // Pool excess: drain immediately, don't wait for idle timeout.
                 beginDrain(session, sp, "pool-excess")
             } else if pastIdleTimeout(session, sp) {
                 beginDrain(session, sp, "idle")
@@ -789,8 +846,27 @@ func reconcile(sessions []bead, cfg config.City, sp runtime.Provider) {
     }
     // {/* REVIEW: Round 5 fix — Phase 2b uses tri-state probes */}
 
-    // Phase 2c: Advance in-progress drains.
-    advanceDrains(sp)
+    // Phase 2c: Wait evaluation and other same-tick wake producers.
+    // If waits transition to ready here, the controller updates readyWaitSet,
+    // clears wait_hold/sleep_intent=wait-hold, and cancels any matching
+    // cancelable drain before advancing drains.
+    waitDelta := evaluateWaitsAndRefreshWakeState(allSessions)
+    for _, sessionID := range waitDelta.NewlyReadySessions {
+        cancelDrain(loadSessionBead(sessionID))
+    }
+
+    // Phase 2d: Advance in-progress drains after all same-tick wake reasons
+    // have been surfaced for this tick.
+    advanceDrains(sp, readyWaitSet, hookedWorkSet)
+
+    // Phase 2e: Reconcile deferred-notification drainers.
+    // Async nudge delivery reuses the unified session lifecycle: for
+    // awake sessions whose resolved deferred-delivery mode is "poller",
+    // the controller ensures exactly one gc nudge-poller bound to the
+    // session's current generation (exported as GC_RUNTIME_EPOCH). It
+    // also reaps stale pollers whose generation, drain mode, or session
+    // identity no longer matches the live session.
+    reconcileAsyncNudgeDrainers(allSessions, cfg, sp)
 
     // Phase 3: Orphan cleanup (grace period).
     // Requires adoption barrier — see Migration protocol.
@@ -1014,7 +1090,8 @@ their counter cleared.
 
 Quarantined sessions show in `gc session list` as `asleep` with
 `sleep_reason: "quarantine"`. The quarantine expires automatically;
-`gc session wake` clears both quarantine AND user hold early.
+`gc session wake` clears quarantine, user hold, wait hold, and sleep
+intent early.
 
 {/* REVIEW: updated per Blocker 7 — gc session wake clears quarantine too */}
 
@@ -1068,10 +1145,15 @@ Wall-clock budget per tick: 5s (configurable) — defer remaining to next tick
    directly. They do not queue through the reconciler. The snapshot is
    taken at tick start and is immutable for the tick's duration.
 
-4. **Mutating requests are queued.** `gc session wake`, `gc session sleep`,
-   `POST /v0/session/new`, and other mutations are queued and processed
-   between reconciler phases. The queue is bounded (default: 100). Overflow
-   returns `503 Service Unavailable`.
+4. **Mutating requests are usually queued.** `gc session wake`,
+   `gc session sleep`, `POST /v0/session/new`, and most other mutations
+   are queued and processed between reconciler phases. The queue is
+   bounded (default: 100). Overflow returns `503 Service Unavailable`.
+   Narrow controller-owned compound mutations may execute synchronously
+   under the same reconciler mutex when they need one atomic read-check-
+   write section; `gc session wait --sleep` is one such exception because
+   registration, trigger re-check, `wait_hold`, and `sleep_intent` must
+   commit together.
 
 5. **Pool evaluation is async.** `evaluatePoolCached` dispatches pool check
    commands to the worker pool with a 5s timeout. Results are collected
@@ -1324,6 +1406,23 @@ func wake(session bead, cfg config.City, sp runtime.Provider) error {
     }
     template := session.Metadata["template"]
 
+    // Resolve wake_mode BEFORE the pre-start metadata commit so the
+    // controller knows whether this wake preserves or replaces the
+    // current conversation identity.
+    wakeMode := "resume"
+    if _, ok := cfg.FindAgent(template); ok {
+        wakeMode = session.Metadata["wake_mode"] // Phase 1a already synced from config
+        if wakeMode == "" { wakeMode = "resume" }
+    }
+    nextContinuationEpoch := session.Metadata["continuation_epoch"]
+    if nextContinuationEpoch == "" {
+        nextContinuationEpoch = "1"
+    }
+    if wakeMode == "fresh" || explicitConversationResetRequested(session) {
+        curr, _ := strconv.Atoi(nextContinuationEpoch)
+        nextContinuationEpoch = strconv.Itoa(curr + 1)
+    }
+
     // === Phase 1: Persist new incarnation BEFORE starting process ===
     gen, _ := strconv.Atoi(session.Metadata["generation"])
     newGen := gen + 1
@@ -1332,6 +1431,7 @@ func wake(session bead, cfg config.City, sp runtime.Provider) error {
     if err := session.SetMetadataBatch(map[string]string{
         "generation":     strconv.Itoa(newGen),
         "instance_token": token,
+        "continuation_epoch": nextContinuationEpoch,
         "last_woke_at":   clock.Now().UTC().Format(time.RFC3339),
         "sleep_reason":   "",
     }); err != nil {
@@ -1340,17 +1440,9 @@ func wake(session bead, cfg config.City, sp runtime.Provider) error {
         return fmt.Errorf("pre-wake metadata commit: %w", err)
     }
 
-    // === Phase 2: Resolve wake_mode and build command ===
-    // Resolve wake_mode ONCE from bead metadata (Phase 1a already synced
-    // config -> metadata). Provider-preset sessions default to "resume".
-    // This single resolved value is used for BOTH ExecSpec construction
-    // AND post-start key cleanup — one authority, no divergence.
-    wakeMode := "resume"
-    if _, ok := cfg.FindAgent(template); ok {
-        wakeMode = session.Metadata["wake_mode"] // Phase 1a already synced from config
-        if wakeMode == "" { wakeMode = "resume" }
-    }
-
+    // === Phase 2: Build command ===
+    // wakeMode and continuation_epoch were resolved once above and are now
+    // authoritative for this wake.
     var spec ExecSpec
     if agent, ok := cfg.FindAgent(template); ok {
         spec = buildExecSpecFromConfig(agent, session, wakeMode)
@@ -1458,13 +1550,15 @@ func validateWorkDir(dir string) error {
 func buildEnv(session bead) map[string]string {
     env := map[string]string{
         // New canonical vars
-        "GC_SESSION_ID":   session.ID,
-        "GC_SESSION_NAME": session.Metadata["session_name"],
-        "GC_TEMPLATE":     session.Metadata["template"],
+        "GC_SESSION_ID":          session.ID,
+        "GC_SESSION_NAME":        session.Metadata["session_name"],
+        "GC_TEMPLATE":            session.Metadata["template"],
+        "GC_CONTINUATION_EPOCH":  session.Metadata["continuation_epoch"],
+        "GC_RUNTIME_EPOCH":       session.Metadata["generation"],
         // Legacy compat vars (emitted during transition, removed in Phase 5)
-        "GC_AGENT":        session.Metadata["template"],
-        "GC_CITY":         cityDir,
-        "GC_DIR":          session.Metadata["work_dir"],
+        "GC_AGENT":               session.Metadata["template"],
+        "GC_CITY":                cityDir,
+        "GC_DIR":                 session.Metadata["work_dir"],
     }
     return env
 }
@@ -1588,9 +1682,11 @@ running (re-evaluated by reconciler on restart).
 
 **Drains are cancelable:** If wake reasons reappear for a session that
 is draining (same generation), the drain is canceled and the session
-remains awake. This prevents unnecessary restarts when transient
-conditions (e.g., brief pool scale-down) reverse before the drain
-completes.
+remains awake. This includes waits that become `ready` later in the same
+tick: Phase 2c must surface the new `WakeWait` and cancel the drain
+before Phase 2d advances it. This prevents unnecessary restarts when
+transient conditions (e.g., brief pool scale-down) reverse before the
+drain completes.
 
 {/* REVIEW: added per Blocker 5 — cancelable drains */}
 
@@ -1599,7 +1695,7 @@ completes.
 type drainState struct {
     startedAt time.Time
     deadline  time.Time
-    reason    string       // "config-drift", "idle", "scale-down", "user-sleep"
+    reason    string       // "config-drift", "idle", "pool-excess", "user-sleep", "wait-sleep"
     generation int         // generation at drain start — stale check
 }
 var activeDrains = map[string]*drainState{}  // keyed by session ID
@@ -1640,7 +1736,7 @@ func cancelDrain(session bead) {
 }
 
 // advanceDrains checks all in-progress drains. Called once per tick.
-func advanceDrains(sp runtime.Provider) {
+func advanceDrains(sp runtime.Provider, readyWaitSet map[string]bool, hookedWorkSet map[string]bool) {
     for id, ds := range activeDrains {
         session := loadSessionBead(id)
         if session == nil {
@@ -1658,7 +1754,7 @@ func advanceDrains(sp runtime.Provider) {
         // Cancelation check: if wake reasons reappeared, cancel drain
         // (config-drift drains are NOT cancelable — the config changed)
         if ds.reason != "config-drift" {
-            reasons := wakeReasons(session, cfg, sp, poolDesired)
+            reasons := wakeReasons(session, cfg, sp, poolDesired, readyWaitSet, hookedWorkSet)
             if len(reasons) > 0 {
                 emit(EventDrainCanceled, session.ID, ds.reason)
                 delete(activeDrains, id)
@@ -1681,6 +1777,7 @@ func advanceDrains(sp runtime.Provider) {
             session.SetMetadataBatch(map[string]string{
                 "slept_at":     clock.Now().UTC().Format(time.RFC3339),
                 "sleep_reason": ds.reason,
+                "sleep_intent": "",
                 "state":        "asleep",
             })
             emit(EventSessionSlept, session.ID, session.Metadata["template"],
@@ -1699,6 +1796,7 @@ func advanceDrains(sp runtime.Provider) {
             session.SetMetadataBatch(map[string]string{
                 "slept_at":     clock.Now().UTC().Format(time.RFC3339),
                 "sleep_reason": ds.reason,
+                "sleep_intent": "",
                 "state":        "asleep",
             })
             emit(EventSessionSlept, session.ID, session.Metadata["template"],
@@ -1893,8 +1991,9 @@ for operator-driven reassignment.
 instances regain `WakeConfig` because `slot <= desired` becomes true
 again. No hold to clear — the pure computation handles it.
 
-**User override:** `gc session wake worker-3` only affects user holds
-and quarantine. It cannot override pool desiredness — if `worker-3` is
+**User override:** `gc session wake worker-3` clears `held_until`,
+`wait_hold`, `sleep_intent`, and quarantine. It cannot override pool
+desiredness — if `worker-3` is
 slot 3 and desired is 2, waking it clears any hold/quarantine but
 `WakeConfig` still evaluates to false. The session stays asleep unless
 it has other wake reasons.
@@ -1905,7 +2004,15 @@ When work is slung to a session that cannot wake (held, quarantined, or
 pool-suppressed), the sling **rejects** the operation with a typed error.
 This prevents silent work stranding during Phase 2-3 (before WakeWork).
 
-{/* REVIEW: updated per Blocker 5 — sling rejects (not just emits event) for blocked sessions */}
+`wait_hold` is intentionally different. It suppresses `WakeConfig` and
+`WakeAttached`, but it does **not** suppress `WakeWork`. Once work-driven
+wake ships, dispatch to a wait-held session is allowed: the new work
+wakes the session, the wait remains registered, and after the work is
+done the session may return to sleeping on that wait. Before WakeWork
+ships, dispatch to a wait-held sleeping session is rejected with
+`reason="wait-hold"` rather than silently queuing unreachable work.
+
+<!-- REVIEW: updated per Blocker 5 — sling rejects (not just emits event) for blocked sessions -->
 
 ```go
 func sling(sessionID string, workBead bead, cfg config.City) error {
@@ -1993,6 +2100,11 @@ rewrites the file periodically (e.g., every 100 appends or on startup).
 This is the simplest approach that meets all requirements and is
 consistent with the existing event log format.
 {/* REVIEW: Round 2 fix — authoritative store backend chosen (append-only JSONL) */}
+
+**Batched lookup by bead ID:** The store MUST provide `ListByIDs(ids
+[]string) ([]bead, error)` or an equivalent batched read path. Wait
+dependency evaluation depends on one bounded batched read per tick; it
+must not degenerate into O(N) point lookups over the JSONL file.
 
 **Degraded-mode policy:** When the bead store is unavailable:
 - Running processes continue undisturbed (no stop, no drain).
@@ -2152,7 +2264,7 @@ GET    /v0/sessions?wake=config      # only config-managed sessions
 GET    /v0/sessions?wake=none        # only sleeping sessions
 GET    /v0/sessions?template=worker  # filter by template
 GET    /v0/session/{id}              # single session detail
-POST   /v0/session/{id}/wake         # explicit wake (clears hold AND quarantine)
+POST   /v0/session/{id}/wake         # explicit wake (clears hold, wait-hold, sleep-intent, quarantine)
 POST   /v0/session/{id}/sleep        # explicit sleep (sets user hold)
 POST   /v0/session/{id}/close        # permanent end
 POST   /v0/session/new               # create interactive session
@@ -2216,7 +2328,7 @@ gc session new <template> [--title TITLE] [--no-attach]
 gc session attach <id|name>         # supports name-based lookup
 gc session peek <id|name> [--lines N]
 gc session sleep <id|name> [--for DURATION]   # sets user hold
-gc session wake <id|name>           # clears hold AND quarantine, wakes
+gc session wake <id|name>           # clears hold, wait-hold, sleep-intent, quarantine; wakes
 gc session close <id|name>
 gc session rename <id> <title>
 gc session prune [--before 7d]
@@ -2265,6 +2377,7 @@ The `REASON` column in `gc session list` has defined semantics:
 | awake | `work (draining)` | Awake with work, drain in progress |
 | asleep | `idle` | Slept due to idle timeout |
 | asleep | `user-hold` | User explicitly held the session |
+| asleep | `wait-hold` | Sleeping due to registered waits |
 | asleep | `quarantine` | Crash-loop quarantine active |
 | asleep | `config-drift` | Slept for config drift restart |
 | asleep | `pool-excess` | Pool scaled down past this slot |
@@ -2445,7 +2558,7 @@ persistent, resumable, work-receiving agent instances.
    See [CLI compatibility contract](#cli-compatibility-contract).
 
 8. ~~**`gc session wake` semantics.**~~ **Resolved.** `gc session wake`
-   clears BOTH user hold AND quarantine. Returns typed outcome
+   clears user hold, wait hold, sleep intent, and quarantine. Returns typed outcome
    (`"woken"`, `"hold_cleared"`, `"quarantine_cleared"`, `"blocked:pool"`,
    etc.). See [API surface](#api-surface-unified).
 
@@ -2638,7 +2751,7 @@ The following scenarios MUST have test coverage before Phase 2 ships:
 | 1 | Config agent wake on first tick | Phase 1 bead creation + Phase 2a wake |
 | 2 | Process crash -> rapid-exit detection -> quarantine | checkStability, recordWakeFailure |
 | 3 | Quarantine expiry -> auto-wake | healExpiredTimers, wakeReasons |
-| 4 | User hold -> gc session wake clears hold AND quarantine | hold/quarantine clearing |
+| 4 | User hold -> gc session wake clears hold/wait-hold/intent/quarantine | hold/quarantine clearing |
 | 5 | Config drift -> drain -> re-wake with new config | config_hash at drain start |
 | 6 | Pool scale-up: 2->4 instances | evaluatePoolCached, reconcilePool |
 | 7 | Pool scale-down with hysteresis | 2-tick hysteresis, pool-excess drain |
@@ -2735,7 +2848,7 @@ lifecycle management. Phase 2 switches to the new reconciler.
 - `PATCH` restricted to `title`; immutable fields rejected with 403
 - `POST /v0/session/new` validated
 - Deprecation warnings on stderr
-- `gc session wake` clears hold AND quarantine
+- `gc session wake` clears hold, wait-hold, sleep-intent, and quarantine
 - Qualified template identity for multi-rig cities
 - `gc config validate` warns for templates missing interrupt guidance
 

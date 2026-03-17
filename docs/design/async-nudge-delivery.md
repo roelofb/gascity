@@ -10,7 +10,7 @@
 
 ## Summary
 
-Add a city-scoped async nudge subsystem for agent notifications that are not direct chat: a provider-level `WaitForIdle` contract, a persistent queue under `.gc/`, a single hook-facing aggregator command for validated turn-boundary injection, and a poller path only for providers that can both run a background drainer and expose a safe idle boundary. `gc session nudge`, `gc mail --notify`, sling nudges, and equivalent API paths default to `wait-idle -> queue`, while `internal/session.Manager.Send()` remains direct and immediate. The revised design makes four constraints explicit: exactly one automatic drainer per agent, queued delivery is allowed only when a safe eventual boundary is proven, failed post-claim injections move to dead-letter instead of disappearing, and operators get queue-health visibility instead of silent accumulation.
+Add a city-scoped async nudge subsystem for agent notifications that are not direct chat: a provider-level `WaitForIdle` contract, a transient delivery queue under `.gc/`, a single hook-facing aggregator command for validated startup/turn-boundary injection, a poller path only for providers that can both run a background drainer and expose a safe idle boundary, and a bead-backed authoritative nudge record for every queued nudge. `gc session nudge`, `gc mail --notify`, sling nudges, and equivalent API paths default to `wait-idle -> queue`, while `internal/session.Manager.Send()` remains direct and immediate. The revised design makes five constraints explicit: exactly one automatic poller per running session runtime, queued delivery is allowed only when a safe eventual boundary is proven, terminal delivery outcome is persisted in beads before transport cleanup, queue files are transport replicas rather than authority, failed post-claim injections do not disappear silently, and operators get queue-health visibility without `state.json`-style status files.
 
 ## Motivation
 
@@ -36,8 +36,8 @@ This matters for Gastown parity because the current audit gap is larger than "ad
 
 - a real runtime idle capability
 - persisted queueing with deferred delivery
-- drain on turn-boundary hooks where available
-- background drain for providers without turn-boundary hooks
+- drain on startup/turn-boundary hooks where available
+- background drain for providers without a hook path
 - migration of async reminder producers onto that subsystem
 - observability strong enough to tell normal deferral from broken delivery
 
@@ -100,7 +100,7 @@ The delivery path never injects raw user-style text for async nudges. In v1, que
 
 ### What changes for hook-enabled providers
 
-Providers that expose a verified async-safe turn boundary keep using hooks, but they no longer run two separate injectors. Their installed turn-boundary hook calls a single aggregator:
+Providers that expose a verified async-safe startup/turn boundary keep using hooks, but they no longer run two separate injectors. Their installed startup and turn-boundary hooks call a single aggregator:
 
 - `gc notify drain --inject`
 
@@ -122,11 +122,11 @@ The poller:
 - drains and injects due reminders
 - exits when the session stops
 
-The controller reconciliation loop is the single owner of automatic poller liveness. It ensures a poller for any running `poller` agent and restarts one if it dies while the session stays up.
+The controller reconciliation loop is the single owner of automatic poller liveness. It ensures a poller for each running session whose resolved deferred-delivery mode is `poller` and restarts one if it dies while that session stays up.
 
 If a provider cannot safely support either hook drain or poller drain, queued delivery is rejected for that target. There is no "queue now, maybe never deliver" mode in the default path.
 
-Queued reminders do not self-wake sleeping agents. Existing wake mechanisms such as session start, sling/controller poke, or an operator opening the session remain responsible for wake-up. The nudge queue is delivery transport, not a wake primitive.
+Queued reminders do not by themselves self-wake sleeping agents. Existing wake mechanisms such as session start, sling/controller poke, or an operator opening the session remain responsible for wake-up. The only exception is a session-wait synthetic nudge paired with a separate durable wait bead: the wait bead produces `WakeWait`, while the queued nudge remains transport only. The nudge queue is never the wake primitive by itself.
 
 ### Config
 
@@ -290,8 +290,9 @@ These are independent notifications, not a sequence of instructions.
 
 For routed providers (`auto` / `hybrid`), queue admission records the concrete delivery contract used at enqueue time:
 
-- if the agent is running, use the resolved live backend contract
-- if the agent is sleeping, use the agent's configured default backend contract
+- if the target session is running, use the resolved live backend contract
+- if the target session is sleeping and config-managed, use the template's configured default backend contract
+- if the target session is sleeping and provider-preset, use `providers.Lookup(session.Metadata["provider"])` from the session bead
 
 Pending queue entries are still agent-scoped, but each one carries the contract it was admitted under. On each new session start, Gas City re-resolves the live backend, compares that live contract to the queued contract, and:
 
@@ -319,14 +320,10 @@ Path layout:
     <safe-qualified-agent-name>/
       queue/
         1741862150123456789-a1b2c3d4.json
-      failed/
-        1741862150123456789-a1b2c3d4.json
-      expired/
-        1741862150123456789-a1b2c3d4.json
-      state.json
       queue.lock
       drain.lock
-      poller.lock
+      pollers/
+        <session-id>.lock
 ```
 
 This is deliberate:
@@ -338,6 +335,24 @@ This is deliberate:
 
 The queue assumes a local POSIX filesystem with atomic rename and advisory file locking semantics. It is not specified for network filesystems that weaken either guarantee.
 
+Because the queue file is only a transport replica, repair must heal
+bead/file divergence on startup and before each drain batch while
+holding `queue.lock`. The repair helper is shared, but the mutation
+rules are serialized by that lock so enqueue depth accounting and file
+materialization cannot race.
+
+- queued `gc:nudge` bead with no transport file (`queue/` or claimed) -> recreate the queue file from bead metadata
+- terminal `gc:nudge` bead with lingering transport file -> delete the file without redelivery
+- transport file with no matching `gc:nudge` bead -> delete the file as orphaned transport residue and emit queue-health degradation
+
+Canonical ownership stays **agent-scoped** even in the unified-sessions
+world:
+
+- locks, queue depth, and backpressure remain per `agent`
+- individual entries may additionally bind to `session_id` and `continuation_epoch`
+- a drainer may claim only unscoped entries or entries bound to its own live session
+- entries bound to some other live session are skipped in place and do not head-of-line block later deliverable items
+
 Every queue state transition uses the same persistence protocol:
 
 1. write the new JSON payload to a temp file in the destination
@@ -347,7 +362,7 @@ Every queue state transition uses the same persistence protocol:
 4. `fsync()` the parent directory
 
 This protocol applies to enqueue, claim metadata updates, restore,
-dead-letter, expiry, and `state.json` updates.
+expiry removal, and transport-file cleanup.
 
 The queue entry format is mechanical:
 
@@ -368,7 +383,10 @@ type NudgeReference struct {
 
 type QueuedNudge struct {
     ID           string    `json:"id"`
+    BeadID       string    `json:"bead_id"`
     Agent        string    `json:"agent"`
+    SessionID    string    `json:"session_id,omitempty"`
+    ContinuationEpoch string `json:"continuation_epoch,omitempty"`
     Message      string    `json:"message"` // reminder text only; max 280 chars
     Reference    *NudgeReference `json:"reference,omitempty"`
     Sender       string    `json:"sender,omitempty"`
@@ -389,30 +407,51 @@ type ClaimMeta struct {
     AttemptBoundary  string     `json:"attempt_boundary,omitempty"` // provider-nudge-return | hook-transport-accepted
 }
 
-type TerminalMeta struct {
-    TerminalAt     time.Time  `json:"terminal_at"`
-    TerminalReason string     `json:"terminal_reason"`
-    Provider       string     `json:"provider"`
-    DrainMode      string     `json:"drain_mode"`
-    CommitBoundary string     `json:"commit_boundary"`
-    FailedAt       *time.Time `json:"failed_at,omitempty"`
-    ExpiredAt      *time.Time `json:"expired_at,omitempty"`
+type NudgeTerminal struct {
+    Outcome        string     `json:"outcome"`         // injected | accepted_for_injection | failed | expired
+    TerminalAt     *time.Time `json:"terminal_at,omitempty"`
+    TerminalReason string     `json:"terminal_reason,omitempty"`
+    Provider       string     `json:"provider,omitempty"`
+    DrainMode      string     `json:"drain_mode,omitempty"`
+    CommitBoundary string     `json:"commit_boundary,omitempty"`
     LastAttemptAt  *time.Time `json:"last_attempt_at,omitempty"`
 }
+```
 
-type AgentNudgeState struct {
-    SessionEpoch         string     `json:"session_epoch,omitempty"`
-    DrainerReadiness     string     `json:"drainer_readiness"`
-    LastQueueHealthAt    *time.Time `json:"last_queue_health_at,omitempty"`
-    LastPollerHeartbeat  *time.Time `json:"last_poller_heartbeat,omitempty"`
-    LastPollerExitReason string     `json:"last_poller_exit_reason,omitempty"`
-    LastDeliveryAt       *time.Time `json:"last_delivery_at,omitempty"`
-    LastFailureAt        *time.Time `json:"last_failure_at,omitempty"`
-    LastHookDrainResult  string     `json:"last_hook_drain_result,omitempty"`
-    LastDeliveryError    string     `json:"last_delivery_error,omitempty"`
-    LatchedDegradedReason string    `json:"latched_degraded_reason,omitempty"`
+Authoritative persistence uses an internal bead per nudge:
+
+```go
+beads.Bead{
+    Type:  "nudge",
+    Title: "nudge:" + queued.ID,
+    Labels: []string{
+        "gc:nudge",
+        "agent:" + queued.Agent,
+        "nudge:" + queued.ID,
+        "source:" + queued.Source,
+    },
+    Metadata: map[string]string{
+        "nudge_id":            queued.ID,
+        "agent":               queued.Agent,
+        "session_id":          queued.SessionID,
+        "continuation_epoch":  queued.ContinuationEpoch,
+        "state":               "queued",
+        "source":              queued.Source,
+        "priority":            queued.Priority,
+        "sender":              queued.Sender,
+        "reference_json":      "{...}",
+        "message":             queued.Message,
+        "contract_json":       "{...}",
+        "deliver_after":       "...",
+        "expires_at":          "...",
+        "terminal_json":       "",
+    },
 }
 ```
+
+The queue file is a transport replica of that bead plus claim metadata.
+If the two diverge after a crash, the bead is authoritative and the next
+repair/drain pass reconciles the queue file to it by `nudge_id`.
 
 Queue entries are a transient delivery buffer only:
 
@@ -428,22 +467,27 @@ Durable human-readable communication remains mail/beads. A queued nudge is only 
 
 When a nudge is derived from mail, a bead, or routed work, the producer
 must populate `Reference` with the authoritative object. `Message`
-remains reminder/pointer text only. `gc nudge status` and dead-letter
-inspection surface references before message text.
+remains reminder/pointer text only. `gc nudge status` and `gc nudge
+show` surface references before message text.
 
-### Session epoch and drainer ownership
+### Runtime epoch and drainer ownership
 
-Every running session has a controller-owned `SessionEpoch` token. The
-controller mints a new epoch on every session start or backend reroute
-and exposes it to automatic drainers:
+Every running session has a controller-owned `RuntimeEpoch` token. This
+is not a new persisted field: it is the session bead's current
+`generation`, exported under a nudge-specific name so drainer contracts
+do not depend on unified-sessions internals. The controller mints a new
+runtime epoch on every wake; any future backend-reroute flow that
+replaces the runtime without a full sleep/wake must increment
+`generation` first and therefore also mint a new runtime epoch. The
+controller exposes that token to automatic drainers:
 
-- pollers are launched with `--session-epoch <epoch>`
-- hook templates receive `GC_SESSION_EPOCH=<epoch>`
+- pollers are launched with `--runtime-epoch <epoch>`
+- hook templates receive `GC_RUNTIME_EPOCH=<epoch>`
 
 Automatic drainers must verify all of the following before they may
 claim any queue entries:
 
-- the agent's current live `SessionEpoch` matches the drainer's epoch
+- the agent's current live `RuntimeEpoch` matches the drainer's epoch
 - the live provider family matches the drainer's expected provider
 - the live drain mode matches the calling context (`hook` vs `poller`)
 - live readiness is satisfied for that drainer type
@@ -453,21 +497,33 @@ If any check fails, the drainer emits `epoch_mismatch`,
 claiming.
 
 Changing effective drain mode for a running agent also mints a new
-`SessionEpoch`. That forces any in-flight drainer from the old contract
+`RuntimeEpoch`. That forces any in-flight drainer from the old contract
 to abort on its next epoch check before the new contract becomes
 `hook_ready` or `poller_running`.
+
+`RuntimeEpoch` and unified-sessions `continuation_epoch` are different
+fences:
+
+- `RuntimeEpoch` (the current `generation`) changes on every wake/runtime replacement and prevents stale drainers from touching a replaced runtime
+- `continuation_epoch` changes only when the conversation identity changes and prevents a wake continuation from landing in the wrong conversation
+
+Wait-generated synthetic nudges are checked against both fences in
+practice: the live drainer context supplies `RuntimeEpoch`, and the
+queued nudge carries `ContinuationEpoch`. `RuntimeEpoch` gates who may
+drain right now; `ContinuationEpoch` gates which conversation may accept
+the reminder.
 
 ### Queue state machine
 
 ```text
 enqueue -> pending (.json)
 pending -> claimed (.json.claimed.<pid>.<start>.<token>) by exclusive drainer
-claimed -> injected                                 remove claim file after Provider.Nudge() success
-claimed -> accepted_for_injection                   remove claim file after hook transport acceptance is observed
-claimed -> failed                                   move to failed/ on inject error
-claimed -> failed                                   move to failed/ on stale recovery if attempt metadata exists
+claimed -> injected                                 update nudge bead terminal state, then delete claim file
+claimed -> accepted_for_injection                   update nudge bead terminal state, then delete claim file
+claimed -> failed                                   update nudge bead terminal state, then delete claim file
+claimed -> failed                                   update nudge bead terminal state on stale recovery if attempt metadata exists, then delete claim file
 claimed -> pending                                  restore only when claimer is dead, age > claim_stale_after, and no attempt metadata exists
-pending -> expired                                  move to expired/ with terminal metadata
+pending -> expired                                  update nudge bead terminal state, then delete queue file
 ```
 
 Concurrency rules:
@@ -476,7 +532,7 @@ Concurrency rules:
 - a drainer must first hold `drain.lock`
 - drain scans queue files in filename order for stable FIFO among deliverable items
 - future-dated entries are skipped in place and do not head-of-line block later due items
-- expired entries move to `expired/` before batch selection
+- expired entries are terminalized in the nudge bead before their queue file is removed
 - only the selected due batch is atomically renamed to claimed files
 - stale-claim recovery compares PID and process start time before restoring
 - hook drain, poller drain, and manual drain all share the same `drain.lock`
@@ -486,7 +542,31 @@ This proposal does **not** claim strict mathematical at-most-once delivery. Prov
 - `provider-nudge-return` means `Provider.Nudge()` returned success
 - `hook-transport-accepted` means the hook adapter observed successful handoff through the provider's declared hook transport contract, but not that the runtime confirmed model insertion
 
-Claims are deleted only after one of those boundaries is reached. Stale claims with recorded attempt metadata are moved to `failed/`, not restored to `queue/`, so ambiguous post-attempt crashes prefer observable dead-letter over duplicate redelivery.
+Claims are deleted only after one of those boundaries is reached and the
+authoritative nudge bead has been updated to the matching terminal
+state. The async nudge subsystem is the sole owner of terminal and
+ambiguous delivery classification: `ambiguous_post_attempt_crash`,
+`expired`, `failed`, `injected`, and `accepted_for_injection` are all
+authored here, not reinterpreted by wait consumers.
+`delivery_contract_mismatch` is intentionally non-terminal: it leaves
+the nudge pending with degraded queue-health until an operator
+recontracts it or it expires. Stale claims with recorded attempt
+metadata are terminalized as `failed`, not restored to `queue/`, so
+ambiguous post-attempt crashes prefer observable failure over duplicate
+redelivery.
+
+Terminalization is a write-ordered protocol:
+
+1. materialize `NudgeTerminal`
+2. read the `gc:nudge` bead for `nudge_id`; if it is already terminal, skip the write and treat any lingering transport file as residue to delete
+3. otherwise update the `gc:nudge` bead with terminal metadata
+4. commit the bead-store write durably
+5. only then delete the successful claim file or remove the expired queue file
+
+The bead update is the authoritative success/failure record that waits
+and operators consume. A lingering queue file after a terminal bead state
+is transport residue, not delivery ambiguity; the next repair/drain pass
+removes it without redelivery.
 
 ### Drain selection algorithm
 
@@ -494,26 +574,40 @@ Every drainer uses the same two-phase algorithm:
 
 1. Gather bounded unread-mail summary first.
 2. Acquire `drain.lock`.
-3. Scan `queue/` in filename order without claiming anything yet.
-4. Move expired entries to `expired/` with terminal metadata.
-5. Skip entries whose `DeliverAfter` is still in the future without renaming them.
-6. Collect up to `max_drain_batch` due entries in stable FIFO order.
-7. Build one merged reminder envelope as a single batch unit from the bounded mail summary plus due nudge metadata.
-8. Apply the envelope packing algorithm:
+3. Resolve the live drainer session context: `agent`, `session_id`, `continuation_epoch`, `RuntimeEpoch`, provider family, and drain mode.
+4. Resolve stale claim files before any queue-file repair:
+   - terminal bead + lingering claim file -> delete the claim file
+   - no bead + lingering claim file -> delete the claim file as orphaned transport residue
+   - live or reclaimable claim -> let stale-claim recovery own it
+5. Scan `queue/` in filename order without claiming anything yet.
+6. For expired entries, update the nudge bead to `expired` and remove the queue file.
+7. Skip entries whose `DeliverAfter` is still in the future without renaming them.
+8. Skip session-scoped entries whose `SessionID` does not match the live drainer session; leave them in place.
+9. Collect up to `max_drain_batch` due entries in stable FIFO order.
+10. Build one merged reminder envelope as a single batch unit from the bounded mail summary plus due nudge metadata.
+11. Apply the envelope packing algorithm:
    - reserve wrapper/preamble overhead first
    - cap mail summary to at most one third of the effective byte budget
    - reserve the remaining budget for nudges in FIFO order
    - if the combined envelope is too large, shrink the nudge batch until it fits
    - if due nudges exist, mail summary may be truncated but due nudges are not dropped behind mail growth
    - if even one due nudge cannot fit with the wrapper, emit no nudge batch and leave all due nudges pending
-9. Only after envelope assembly succeeds, rename the selected due entries to claimed files and write `ClaimMeta`.
-10. Release `drain.lock`.
-11. For poller delivery, call `WaitForIdle()` one more time after claim and before any attempt metadata is written. If that re-check fails, restore the claims because no provider attempt has begun yet.
-12. For hook delivery, revalidate `SessionEpoch`, provider family, drain mode, and live hook readiness after claim and immediately before hook handoff. If the live contract changed, restore the claims because no provider attempt has begun yet.
-13. Persist `LastAttemptAt=now` and `AttemptBoundary` durably to every claimed entry before any provider call or hook handoff begins.
-14. Attempt injection through the live provider contract.
-15. On success, delete claims and emit the matching terminal event.
-16. On failure, move claims to `failed/` with `TerminalMeta`.
+12. Only after envelope assembly succeeds, rename the selected due entries to claimed files and write `ClaimMeta`.
+13. Release `drain.lock`.
+14. For poller delivery, call `WaitForIdle()` one more time after claim and before any attempt metadata is written. If that re-check fails, restore the claims because no provider attempt has begun yet.
+15. For hook delivery, revalidate `RuntimeEpoch`, provider family, drain mode, and live hook readiness after claim and immediately before hook handoff. If the live contract changed, restore the claims because no provider attempt has begun yet; queue-health and the nudge bead's non-terminal contract metadata surface the mismatch.
+16. For every claimed entry with `SessionID` or `ContinuationEpoch`, revalidate them against the live session. On mismatch, terminalize that nudge as `failed(reason=session_mismatch|epoch_mismatch)`, delete its claim file, and continue without attempting provider injection for that entry.
+17. For every claimed entry with `Source="wait"` and `Reference.Kind="bead"`, re-read the referenced wait bead and require `state=ready`. If the wait is no longer ready, terminalize the nudge as `failed(reason=wait_not_ready)`, delete its claim file, and continue without injection.
+18. Persist `LastAttemptAt=now` and `AttemptBoundary` durably to every remaining claimed entry before any provider call or hook handoff begins.
+19. Attempt injection through the live provider contract.
+20. On success, update the nudge bead to its terminal success state, delete claims, and emit the matching terminal event.
+21. On failure, update the nudge bead to `failed`, delete claims, and emit the matching terminal event.
+
+Once step 18 completes, the claimed `gc:nudge` bead is authoritative for
+that delivery attempt. Higher-level subsystems such as waits may still
+record that a cancel/reset raced with delivery, but they do not recall
+or overwrite an in-flight attempt after the provider boundary has been
+crossed.
 
 If envelope assembly fails before step 9, queue state is unchanged except for expired-entry cleanup. Partial source handling is pre-claim only:
 
@@ -536,15 +630,20 @@ const (
 )
 
 type Options struct {
-    Mode         DeliveryMode
-    Priority     string
-    DeliverAfter time.Time
-    Source       string
-    Sender       string
+    Mode              DeliveryMode
+    Priority          string
+    DeliverAfter      time.Time
+    Source            string
+    Sender            string
+    NudgeID           string          // optional deterministic override for controller-owned flows
+    SessionID         string          // optional session fence inside an agent-scoped queue
+    ContinuationEpoch string          // optional conversation fence paired with SessionID
+    Reference         *NudgeReference // optional authoritative pointer surfaced in status/show
+    TTL               time.Duration   // optional expiry override for controller-owned flows
 }
 
 type Result struct {
-    Outcome        string // injected | accepted | queued | degraded | rejected
+    Outcome        string // injected | accepted_for_injection | queued | degraded | rejected
     DeliveryMode   DeliveryMode
     CommitBoundary string // provider-nudge-return | hook-transport-accepted | none
     Agent          string
@@ -556,42 +655,58 @@ Dispatch algorithm:
 1. Resolve agent identity.
 2. Validate message size (`<= 280` chars). Oversized or long-form content is rejected with guidance to use mail/beads instead.
 3. Resolve the current runtime session/backend only if the target is running.
-4. Resolve the effective delivery contract to admit:
-   - running agent: use the resolved live backend
-   - sleeping agent: use the agent's configured default backend
-5. Validate that the effective contract exposes either a live-safe `hook` path or a `poller` path with `WaitForIdle()`.
-6. Validate `DeliverAfter < ExpiresAt`. When the caller omits `ExpiresAt`, compute it from `max(CreatedAt, DeliverAfter) + ttl`.
-7. Persist the resolved `DeliveryContract` onto the queued entry if the reminder will be enqueued.
-8. If `Mode=immediate`:
+4. If `Options.NudgeID` is set, look up an existing `gc:nudge` bead labeled `nudge:<NudgeID>`. If one exists, treat the call as idempotent: return its current terminal/non-terminal outcome and do not enqueue a duplicate transport file.
+5. Resolve the effective delivery contract to admit:
+   - running target session: use the resolved live backend
+   - sleeping config-managed session: use the template's configured default backend
+   - sleeping provider-preset session: use `providers.Lookup(session.Metadata["provider"])` from the target session bead
+6. Validate that the effective contract exposes either a live-safe `hook` path or a `poller` path with `WaitForIdle()`.
+7. Validate `DeliverAfter < ExpiresAt`. When the caller omits `ExpiresAt`, compute it from `max(CreatedAt, DeliverAfter) + ttl`.
+8. Persist the resolved `DeliveryContract` onto the queued entry if the reminder will be enqueued.
+9. If `Mode=immediate`:
    - require the session to be running
    - inject the provider-specific reminder envelope directly
-9. If `Mode=wait-idle`:
+10. If `Mode=wait-idle`:
    - if the session is running, call `WaitForIdle`
    - on success, inject directly
    - on `ErrIdleTimeout`, enqueue
    - on `ErrIdleUnsupported`, enqueue only if the provider has a valid drain path that will eventually observe a safe boundary; otherwise return `degraded` error
-10. If `Mode=queue`:
+11. If `Mode=queue`:
    - require a valid drain path (`hook` or `poller+WaitForIdle`)
    - enqueue regardless of whether the session is running
-11. After enqueue:
+12. After enqueue:
    - `hook`: nothing else required
    - `poller`: emit queue-health immediately and rely on controller reconciliation to ensure the poller whenever the session is running
    - producers that also created work may still poke the controller
 
-The dispatcher's public contract is agent-based. Session names are runtime-internal details used only when a live backend exists.
+The dispatcher's public CLI/API contract is agent-based. Session-scoped
+fields are controller-internal escape hatches used by waits and other
+continuation mechanisms; ordinary producers do not choose them.
 
 Enqueue holds `queue.lock` for queue-depth accounting. While holding
 that lock, the producer:
 
 - counts current pending entries
 - rejects when `max_queue_depth` would be exceeded
-- writes the new entry durably
-- updates `state.json`
+- creates or updates the authoritative `gc:nudge` bead with `state=queued`
+- writes the new queue entry durably with a pointer to that bead
 
 `Provider.Nudge()` remains the low-level immediate send primitive after
 this refactor. It no longer owns any wait-idle policy. The dispatcher
 owns the `WaitForIdle() -> inject` sequence so the wait contract is
 specified exactly once.
+
+The dispatcher MUST NOT return success until both the authoritative
+`gc:nudge` bead and the transport queue file have been durably written.
+If queue-file persistence fails after the bead write, the dispatcher
+must delete the newly created non-terminal nudge bead before returning
+the error so a synchronous failure cannot later become an asynchronous
+delivery. Reconstruction of a missing queue file is therefore only a
+crash-recovery path for bead writes that completed before the process
+died, not for calls that already returned failure. If the dispatcher
+crashes after writing the queue file but before returning to the caller,
+replay with the same `nudge_id` is idempotent because the dispatcher
+first looks up an existing `gc:nudge` bead labeled `nudge:<id>`.
 
 ### Injection formatting
 
@@ -627,6 +742,7 @@ Hidden helper commands:
 Debug/operator commands:
 
 - `gc nudge status <agent>`
+- `gc nudge show <nudge-id>`
 - `gc nudge drain <agent>`
 - `gc nudge recontract <agent>`
 - `gc nudge status <agent> --json`
@@ -634,27 +750,28 @@ Debug/operator commands:
 `gc notify drain --inject`:
 
 - resolves the target agent from `$GC_AGENT` or arg
+- reads `$GC_SESSION_ID`, `$GC_CONTINUATION_EPOCH`, and `$GC_RUNTIME_EPOCH` from the live session context when present
 - reads unread mail summary plus due queued nudges
 - verifies live drainer readiness (`hook_ready`, `hook_unverified`, `poller_running`, `poller_missing`, `drainer_impossible`)
-- enforces session-epoch and mode guards before any claim
+- enforces runtime-epoch and mode guards before any claim
 - emits one merged provider-ready reminder envelope through the live provider's declared hook transport contract
 - returns one of five result classes internally: `empty`, `rendered`, `partial`, `suppressed-error`, `mode-mismatch`
 - in `--inject` mode, always exits 0 so hook runners do not break the session lifecycle
 - on `suppressed-error`, attempts a one-line degraded reminder within `MaxReminderBytes` (`notification system degraded; run gc nudge status`) using the same `ReminderEnvelope` before falling back to empty output
 - emits hook-drain observability for every invocation so "empty" and "broken but suppressed" are distinguishable
-- updates `state.json` with `last_hook_drain_result`, `last_delivery_error`, and any latched degraded state
+- does not write snapshot status files; operators reconstruct recent hook health from events and `gc:nudge` beads
 
 `gc nudge-poller`:
 
 - runs as a detached child process, similar to `gc daemon start`
-- acquires `poller.lock` for its target
+- acquires `pollers/<session-id>.lock` for its target session
 - checks queue health every `poll_interval`
 - emits a heartbeat every `max(30s, 5*poll_interval)` while alive
 - calls `WaitForIdle(session, poll_idle_timeout)`
 - only drains after a verified idle boundary
 - emits `session.nudge_poller_idle_miss` on `ErrIdleTimeout`
 - counts consecutive `ErrIdleUnsupported`; after 3 strikes it emits a fatal poller error with reason `idle_permanently_unsupported` and exits
-- holds `poller.lock` for its lifetime, but acquires `drain.lock` only for queue scan/claim work
+- holds its session-scoped poller lock for its lifetime, but acquires `drain.lock` only for queue scan/claim work
 - exits if the session stops or the agent's resolved drain mode is no longer `poller`
 - exits when the session stops
 
@@ -677,22 +794,26 @@ Debug/operator commands:
 - oldest pending age
 - oldest due age
 - due count
-- failed count
-- expired count
+- recent terminal success count
+- recent terminal failure count
 - drain mode
 - drainer readiness state
 - whether the session is running
-- whether a poller lock/process is active
-- last poller heartbeat if known
-- last delivery error if known
+- which poller locks/processes are active for this agent queue
+- latest poller heartbeat event if known
+- latest hook-drain result event if known
+- latest terminal nudge failure from `gc:nudge` beads if known
 
-`gc nudge status` reads `state.json` as the source of truth for last
-heartbeat, last exit reason, last hook-drain result, and latched
-degraded state, then supplements that with live lock/session checks.
+`gc nudge status` derives its view from live queue scan, live
+lock/session checks, recent `session.nudge_*` events, and recent
+`gc:nudge` beads. There is no `state.json` authority file.
+For session-scoped due nudges, readiness and heartbeat fields are
+computed against the bound session; for unscoped nudges, any compatible
+live drainer for the agent counts.
 
 ### Hook changes
 
-Provider hook templates change only at the turn-boundary injection point.
+Provider hook templates change only at the startup/turn-boundary injection points.
 
 Every hook-capable provider calls the same aggregator:
 
@@ -707,7 +828,7 @@ Observable contract:
 - stderr is not part of the injected prompt
 - only providers whose `HookTransport` is explicitly implemented may use this path
 - in v1, only `stdout-reminder-splice` is implemented; providers with transform-style or JSON-return hooks remain `AsyncNudgeDrainMode=none` until an adapter is added
-- queue claims are deleted only after the command reaches `hook-transport-accepted`
+- queue claims are deleted only after the command reaches `hook-transport-accepted` and the authoritative `gc:nudge` bead is durably terminalized
 - hook-mode success is recorded as `accepted_for_injection`, not `injected`, because the runtime does not give a stronger ack today
 
 Live hook readiness requires all of:
@@ -716,11 +837,19 @@ Live hook readiness requires all of:
 - installed hooks are present for the agent
 - installed hook version matches the async-nudge aggregator version
 - payload fits `MaxReminderBytes`
-- current session epoch and provider family match the hook invocation context
+- current runtime epoch and provider family match the hook invocation context
 
 If any check fails, the effective drainer state becomes `hook_unverified`
 or `drainer_impossible`, queue drain is skipped, and queue-health emits a
 degraded reason.
+
+Hook-capable providers must invoke the same aggregator once during
+session startup after hook installation and before the session accepts
+its first normal turn. This gives a session that woke because of a wait
+one immediate safe delivery opportunity even if it would otherwise sit
+idle with no natural turn boundary. Providers that cannot prove either
+startup execution or a poller path remain ineligible for queued delivery
+to sleeping sessions.
 
 `gc hook --inject` remains work-only. It does not become a kitchen-sink notification command.
 
@@ -736,10 +865,10 @@ forever. Migration requirement:
 The first migration set is:
 
 - `cmd/gc/cmd_session.go`
-  `gc session nudge` defaults to `--delivery=wait-idle` and adds `--delivery`, `--priority`, and `--deliver-after`.
+  `gc session nudge` defaults to `--delivery=wait-idle`, adds `--delivery`, `--priority`, and `--deliver-after`, and always persists `SessionID` plus the session's current `ContinuationEpoch` so session-directed nudges cannot spill into sibling sessions that share the same template/agent queue.
 
 - `cmd/gc/cmd_mail.go`
-  `--notify` uses the async dispatcher instead of direct `sp.Nudge()`. The mail write remains the primary action; notify failure is surfaced as warning/error metadata, not a mail-send rollback.
+  `--notify` uses the async dispatcher instead of direct `sp.Nudge()`. The mail write remains the primary action; notify failure is surfaced as warning/error metadata, not a mail-send rollback. Agent-targeted notify paths remain unscoped unless the existing routing layer has already selected one live session.
 
 - `cmd/gc/cmd_sling.go`
   `--nudge` uses the async dispatcher. Controller poke behavior stays, because routing work still needs a wake signal.
@@ -766,23 +895,25 @@ Expected failure modes and handling:
   Return `degraded` error for `queue` and `wait-idle`. Default async delivery must not pretend to be durable without an eventual safe delivery path.
 
 - **controller cannot ensure poller**
-  The queue entry remains pending, controller reconciliation keeps retrying poller ownership while the session is running, and observability emits `session.nudge_poller_unavailable` plus queue-health degradation. The dispatcher does not spawn an unmanaged second owner.
+  The queue entry remains pending, controller reconciliation keeps retrying poller ownership for the specific target session while that session is running, and observability emits `session.nudge_poller_unavailable` plus queue-health degradation. The dispatcher does not spawn an unmanaged second owner.
 
 - **poller wedges without exiting**
   Controller reconciliation treats the poller as stale only when both of
   these are true:
   - `last_poller_heartbeat` is older than `3 * heartbeat_interval`
-  - `poller.lock` is non-blocking acquirable by reconciliation
+  - `pollers/<session-id>.lock` is non-blocking acquirable by reconciliation
 
-  On stale takeover, reconciliation records the old exit reason in
-  `state.json`, emits `session.nudge_poller_error`, and starts a new
-  poller for the current session epoch.
+  On stale takeover, reconciliation emits `session.nudge_poller_error`
+  and starts a new poller for that session's current runtime epoch.
 
 - **inject fails after claim**
-  Move the queue entry to `failed/`, emit `session.nudge_failed`, and do not auto-retry in v1. Operators can inspect and manually decide whether to requeue after diagnosis. This preserves evidence without creating retry storms.
+  Update the `gc:nudge` bead to `failed`, emit `session.nudge_failed`,
+  delete the queue file, and do not auto-retry in v1. Operators can
+  inspect and manually decide whether to requeue after diagnosis. This
+  preserves evidence without creating retry storms.
 
 - **stale claim recovered**
-  Restore to `queue/` only after claimer-death verification with matching process start time and only when no `LastAttemptAt` is recorded. If a stale claim already has attempt metadata, move it to `failed/` as `ambiguous_post_attempt_crash`.
+  Restore to `queue/` only after claimer-death verification with matching process start time and only when no `LastAttemptAt` is recorded. If a stale claim already has attempt metadata, update the `gc:nudge` bead to `failed` with reason `ambiguous_post_attempt_crash` and delete the queue file.
 
 - **agent removed from config**
   Leave queue files on disk, emit queue-health degradation, and require operator cleanup or replay. Queue state is transport evidence and is not deleted silently on config edits.
@@ -839,10 +970,12 @@ Required `reason` values:
 - `due_without_active_drainer`
 - `delivery_contract_mismatch`
 - `mode_mismatch`
+- `session_mismatch`
 - `epoch_mismatch`
+- `wait_not_ready`
 - `hook_unverified`
 - `due_without_timely_drain`
-- `dead_letter_accumulation`
+- `failed_nudge_accumulation`
 - `circuit_breaker`
 
 `session.nudge_queue_health` is emitted by controller reconciliation every `max(30s, 5*poll_interval)` for each non-empty queue and immediately on threshold crossings or state changes. It includes:
@@ -851,8 +984,8 @@ Required `reason` values:
 - `due_count`
 - `oldest_pending_age`
 - `oldest_due_age`
-- `failed_count`
-- `expired_count`
+- `recent_failed_count`
+- `recent_expired_count`
 - `session_running`
 - `drainer_readiness=hook_ready|hook_unverified|poller_running|poller_missing|drainer_impossible`
 - `last_poller_heartbeat`
@@ -864,8 +997,8 @@ Threshold crossings are explicit in v1:
 - queue depth transitions from `0 -> N`
 - due count transitions from `0 -> N`
 - `oldest_due_age > wait_idle_timeout` => `due_without_timely_drain`
-- `failed_count > 0` => warning-only queue health
-- `failed_count >= max_failed_retained` => `dead_letter_accumulation`
+- `recent_failed_count > 0` => warning-only queue health
+- `recent_failed_count >= max_failed_retained` => `failed_nudge_accumulation`
 - `drainer_readiness=poller_missing` with `due_count > 0` => `due_without_active_drainer`
 - repeated poller exits with `idle_permanently_unsupported` => `circuit_breaker`
 - hook readiness regresses from ready to unverified
@@ -877,25 +1010,27 @@ Threshold crossings are explicit in v1:
 Controller reconciliation applies a poller circuit breaker: after 3
 consecutive poller exits for one agent with reason
 `idle_permanently_unsupported`, it stops restarting the poller for that
-session epoch, marks `drainer_readiness=drainer_impossible`, and emits
+runtime epoch, marks `drainer_readiness=drainer_impossible`, and emits
 `session.nudge_poller_unavailable` with reason `circuit_breaker`.
 
-Degraded states are latched in `state.json` until cleared by a
-successful drain or explicit operator action. `gc nudge status` surfaces
-the latched degraded state prominently even after process restart.
+Degraded states are latched in recent events and `gc:nudge` beads until
+cleared by a successful drain or explicit operator action. `gc nudge
+status` reconstructs that degraded state after restart rather than
+reading a snapshot file.
 
 Telemetry here means existing session events plus in-process counters/log fields, not OpenTelemetry.
 
 Retention:
 
-- `failed/` entries retain `TerminalMeta` for up to 7 days and up to `max_failed_retained`, whichever limit is reached first
-- `expired/` entries retain `TerminalMeta` for 24 hours and are then pruned by controller reconciliation
+- terminal `gc:nudge` beads with success outcomes retain for 24 hours
+- terminal `gc:nudge` beads with failure outcomes retain for 7 days
+- queue files are removed immediately after the authoritative bead reaches a terminal state
 
 Counters extend the existing nudge counter with attributes:
 
 - `mode=immediate|wait-idle|queue`
-- `outcome=injected|accepted|queued|failed|rejected|degraded|expired`
-- `source=session-nudge|mail-notify|sling|api`
+- `outcome=injected|accepted_for_injection|queued|failed|rejected|degraded|expired`
+- `source=session-nudge|mail-notify|sling|api|wait`
 - `provider=<provider>`
 - `drain_mode=hook|poller|none`
 - `reason=<reason>`
@@ -903,9 +1038,10 @@ Counters extend the existing nudge counter with attributes:
 Operators diagnose problems via:
 
 - `gc nudge status <agent>`
+- `gc nudge show <nudge-id>`
 - queue-health events
 - queue files under `.gc/nudges/`
-- `failed/` dead-letter entries
+- `gc:nudge` beads for authoritative terminal records
 
 ### Configuration
 
@@ -942,6 +1078,17 @@ Validation:
 - computed `ExpiresAt` must be after `DeliverAfter`
 - queued nudge messages must be `<= 280` chars
 
+### Rollout phases
+
+| Phase | Scope |
+|---|---|
+| **Phase 1: Wait-safe deferred delivery** | bead-backed `gc:nudge` authority, agent-scoped queue with optional session fences, deterministic `NudgeID` admission, hook delivery via `gc notify drain --inject`, terminal-state consumption by waits/operators, controller-owned poller lifecycle hooks, `gc nudge status/show` diagnostics |
+| **Phase 2: Broader provider and producer coverage** | provider-specific poller hardening, expanded producer migrations, recontract/replay tooling, broader default-provider eligibility |
+
+Wait-driven sleep/wake depends specifically on **Phase 1** plus a target
+session/provider whose resolved async-nudge contract is not
+`AsyncNudgeDrainMode=none`.
+
 ### Backward compatibility
 
 Existing config continues to work unchanged.
@@ -975,22 +1122,27 @@ Derivation:
 | Bitter Lesson | Pass | A stronger model still cannot mechanically detect safe terminal injection without a runtime signal. |
 | ZFC | Pass | Go code makes only transport decisions from explicit mode/capability/timeout inputs. Message meaning stays in prompts/callers. |
 
-### Why Not Beads Or Mail
+### Why Queue Plus Beads
 
-Queue files are transport state, not messaging state. Encoding retries,
-claims, dead-letter, and expirations as beads or mail would:
+Pure queue files would make `.gc/nudges/` a second durable state system,
+which fights the layering guidance in `CLAUDE.md`. Pure beads would make
+claim/lease semantics awkward in the current bead store and give up the
+simple atomic rename protocol that makes local deferred delivery robust.
 
-- turn low-value reminder traffic into durable user-visible history
-- create extra writes for what is fundamentally transport bookkeeping
-- blur the boundary between "authoritative message" and "reminder to go read the authoritative message"
+So the design splits responsibilities cleanly:
 
-The design therefore keeps substantive communication in mail/beads and
-uses `.gc/nudges/` only for bounded delivery bookkeeping.
+- `gc:nudge` beads are the authoritative persistence substrate
+- queue files are transient transport replicas used only for admission, claim, and delivery
+- the event bus remains the observation substrate for operators and tooling
+
+This preserves Gas City's preferred substrates while keeping the one
+filesystem trick that actually buys us atomic local claim.
 
 ## Drawbacks
 
 - This adds real surface area: new config, queue files, lock handling, hidden commands, poller lifecycle, and hook updates.
 - There are now two deferred drain strategies (`hook` and `poller`), which increases testing cost.
 - A persistent queue can still produce stale reminders if TTLs are too generous or operators forget that asleep sessions can accumulate notifications.
+- Internal `gc:nudge` beads add write volume and retention work even though the reminders are low-value.
 - `WaitForIdle` as a provider interface change touches every runtime backend.
-- Dead-letter handling is operationally safer than silent drop, but it also means nudges can accumulate in `failed/` until someone looks.
+- Failure evidence is safer than silent drop, but it also means failed `gc:nudge` beads can accumulate until retention prunes them.

@@ -12,11 +12,11 @@
 
 Add a durable **wait** subsystem so a session can register "wake me when this condition becomes true," drain to sleep, and later resume with the same conversation when the condition is satisfied. A wait is a dynamic, per-session instance stored as a bead; the controller evaluates waits using three trigger kinds: event, bead dependency, and external probe. External probes resolve against a controller-owned built-in waiter registry by default, with optional city-local and pack-defined extensions for custom integrations. When a wait becomes ready, the controller keeps it in durable `ready` state, wakes the session through `WakeWait`, enqueues a synthetic nudge entry referencing the wait bead into the async nudge queue, and closes or fails the wait only after the async nudge subsystem advances the authoritative `gc:nudge` bead to a terminal state. This preserves durable continuation handoff semantics up to the strongest provider commit boundary available for long pauses such as async reviews and external approvals, while freeing the agent process and most of its memory during the wait.
 
-{/* REVIEW: added per Blocker 1 — delivery delegated to async nudge queue */}
+<!-- REVIEW: added per Blocker 1 — delivery delegated to async nudge queue -->
 
 The proposal deliberately does **not** overload existing Orders. Orders are static, global automation definitions; waits are dynamic, targeted continuations for one blocked session. The implementation should reuse order-like evaluation patterns — specifically, a shared evaluator layer for event cursor matching and exec probe execution — but not the Order type itself.
 
-{/* REVIEW: added per Major 10 — shared evaluator layer */}
+<!-- REVIEW: added per Major 10 — shared evaluator layer -->
 
 ## Motivation
 
@@ -116,7 +116,7 @@ The blocked session does **not** hand the controller an arbitrary shell string. 
 
 ### Operator view
 
-{/* REVIEW: added per Blocker 6 — expanded operator tooling */}
+<!-- REVIEW: added per Blocker 6 — expanded operator tooling -->
 
 Operators can inspect and manage waits:
 
@@ -200,7 +200,7 @@ const (
 )
 ```
 
-{/* REVIEW: added per Blocker 1 — removed StateDelivering; added per Blocker 4 — added StateFailed */}
+<!-- REVIEW: added per Blocker 1 — removed StateDelivering; added per Blocker 4 — added StateFailed -->
 
 ```go
 type Spec struct {
@@ -214,7 +214,7 @@ type Spec struct {
 }
 ```
 
-{/* REVIEW: added per Major 11 — SessionGeneration binding; added per Blocker 7 — CreatedBySession provenance */}
+<!-- REVIEW: added per Major 11 — SessionGeneration binding; added per Blocker 7 — CreatedBySession provenance -->
 
 ```go
 type TriggerSpec struct {
@@ -251,7 +251,7 @@ type ProbeResult struct {
 }
 ```
 
-{/* REVIEW: added per Minor 18 — ConsecutiveFailures and LastError in ProbeTrigger */}
+<!-- REVIEW: added per Minor 18 — ConsecutiveFailures and LastError in ProbeTrigger -->
 
 The controller-side orchestration lives in `cmd/gc/wait_dispatch.go`, analogous to order dispatch, but the persistent model belongs in `internal/waits`.
 
@@ -259,7 +259,7 @@ The controller-side orchestration lives in `cmd/gc/wait_dispatch.go`, analogous 
 
 A wait is a bead with `type = "wait"`:
 
-{/* REVIEW: added per Major 12 — hoisted key trigger fields to top-level metadata */}
+<!-- REVIEW: added per Major 12 — hoisted key trigger fields to top-level metadata -->
 
 ```go
 beads.Bead{
@@ -301,7 +301,7 @@ failed wait-originated nudge via `gc wait retry`.
 
 ### 3) Built-in and extension waiter definitions
 
-{/* REVIEW: added per security feedback and follow-up discussion — built-in waiters work without packs */}
+<!-- REVIEW: added per security feedback and follow-up discussion — built-in waiters work without packs -->
 
 External waits resolve waiter references from two sources:
 
@@ -345,7 +345,7 @@ City-local waiters live under:
 waiters/<name>/waiter.toml
 ```
 
-{/* REVIEW: added per Minor 15 — waiter name validation */}
+<!-- REVIEW: added per Minor 15 — waiter name validation -->
 
 Pack and city waiter names must match `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`. The controller rejects names containing `/`, `..`, or path separators before constructing the filesystem path. The `pack:` prefix must specify both pack and waiter name (`pack:<pack>/<name>`); both segments use the same validation rule.
 
@@ -361,7 +361,7 @@ max_backoff = "10m"
 max_failures = 10
 ```
 
-{/* REVIEW: added per Minor 18 — max_failures field */}
+<!-- REVIEW: added per Minor 18 — max_failures field -->
 
 Extension waiters print JSON shaped like `ProbeResult`. The command receives stable environment variables:
 
@@ -372,7 +372,7 @@ Extension waiters print JSON shaped like `ProbeResult`. The command receives sta
 
 This keeps controller-executed code in trusted named definitions instead of arbitrary session-authored shell. For critical common integrations, built-ins are preferred over extension waiters because they avoid shell portability, shadowing ambiguity, and pack installation as a prerequisite.
 
-{/* REVIEW: added per Minor 17 — waiter args schema validation */}
+<!-- REVIEW: added per Minor 17 — waiter args schema validation -->
 
 Extension waiter definitions may include an optional `[args]` section declaring expected argument names and types. When present, the controller validates `--arg` values against the schema before persisting the wait bead. Regardless of schema, `GC_WAIT_ARGS_JSON` is always a flat `map[string]string` — no nested structures.
 
@@ -410,7 +410,7 @@ This means a wait that becomes `ready` during Phase 2c of tick N is visible befo
 
 `readyWaitSet` is built from the wait bead metadata field `state=ready`, then filtered by `session_id` and `continuation_epoch` against the live session table. Labels are advisory only.
 
-{/* REVIEW: added per Major 8 — wait_hold for config agents and pool workers */}
+<!-- REVIEW: added per Major 8 — wait_hold for config agents and pool workers -->
 
 #### Interaction with standing wake reasons
 
@@ -449,7 +449,7 @@ Manual `gc session wake` clears `held_until`, `quarantined_until`, `wait_hold`, 
 
 `gc session attach` detects `wait_hold` and prints an explicit message explaining that the session is intentionally sleeping for waits. It offers the operator the equivalent of `gc session wake` rather than hanging opaquely.
 
-{/* REVIEW: added per Major 11 — continuation epoch binding */}
+<!-- REVIEW: added per Major 11 — continuation epoch binding -->
 
 #### Continuation epoch binding
 
@@ -469,7 +469,7 @@ The wait subsystem should reuse that behavior instead of inventing another lifec
 
 ### 5) Registration contract and the sleep-wakeup race
 
-{/* REVIEW: added per Blocker 7 — authorization model */}
+<!-- REVIEW: added per Blocker 7 — authorization model -->
 
 #### Authorization
 
@@ -487,7 +487,7 @@ Authorization matrix:
 | `gc wait retry <id>` | Not allowed | Allowed |
 | `gc wait clear-hold <session>` | Not allowed | Allowed |
 
-{/* REVIEW: added per Minor 16 — drain reason specified */}
+<!-- REVIEW: added per Minor 16 — drain reason specified -->
 
 `gc session wait --sleep` must perform these steps in order:
 
@@ -505,7 +505,7 @@ Authorization matrix:
 6. Write `wait_hold` and `sleep_intent = "wait-hold"` to the session bead only if the session is actually proceeding to drain.
 7. Begin the normal session drain with `drain_reason = "wait-sleep"`. This drain reason is cancelable (unlike `config-drift` drains, which are exempt from cancellation).
 
-{/* REVIEW: added per Minor 17 — note sanitization */}
+<!-- REVIEW: added per Minor 17 — note sanitization -->
 
 The `--note` value is sanitized before storage: XML-like tags (including `</system-reminder>`) are stripped, and the note is capped at 280 characters to align with the synthetic nudge message budget. The note is reminder text, not a prompt injection surface.
 
@@ -520,7 +520,7 @@ The `gc session wait` CLI command sends a structured request over the controller
 
 ### 6) Wait state machine
 
-{/* REVIEW: added per Blocker 1 — simplified state machine, removed delivering state */}
+<!-- REVIEW: added per Blocker 1 — simplified state machine, removed delivering state -->
 
 ```text
 register
@@ -552,7 +552,7 @@ The former `delivering` state has been eliminated. Delivery claim, terminalizati
 
 ### 7) Evaluation paths
 
-{/* REVIEW: added per Major 10 — shared evaluator layer with orders */}
+<!-- REVIEW: added per Major 10 — shared evaluator layer with orders -->
 
 Event cursor matching uses a shared evaluator layer extracted from the order gate machinery. Probe execution lives in the same package but is wait-specific because orders use exit-code gates while waits need structured JSON results.
 
@@ -591,7 +591,7 @@ Dependency waits inspect bead state directly:
 
 For v0, "terminal" should mean bead status `closed`. Follow-on work can add richer terminal predicates if needed.
 
-{/* REVIEW: added per Major 13 — batch lookup for dependency waits */}
+<!-- REVIEW: added per Major 13 — batch lookup for dependency waits -->
 
 Dependency evaluation uses a single `ListByIDs` call per tick to batch-resolve all dependency bead states, rather than individual lookups per wait. `ListByIDs` (or an equivalent batched read) is a prerequisite for Phase B.
 
@@ -605,7 +605,7 @@ Probe waits are the expensive path and need explicit pacing:
 - on `Ready=false`, store the next check time using `max(RecheckAfter, default_interval)` or the waiter's default interval if `RecheckAfter` is empty
 - on failure, emit `wait.probe_failed`, increment `ConsecutiveFailures`, record the error, apply exponential backoff capped at `max_backoff` from the waiter TOML, and remain `pending`
 
-{/* REVIEW: added per Minor 18 — probe backoff and failure limits */}
+<!-- REVIEW: added per Minor 18 — probe backoff and failure limits -->
 
 Probe backoff follows exponential growth: `min(default_interval * 2^failures, max_backoff)`. `ConsecutiveFailures` resets to 0 on any successful probe execution, even when `Ready=false`. After `max_failures` consecutive failures (default: 10, configurable per waiter), the wait transitions to `failed` and emits `wait.probe_exhausted`. This prevents indefinite polling of broken probes.
 
@@ -613,7 +613,7 @@ V0 probe waits are restricted to level-trigger predicates only: "is approved now
 
 ### 8) Delivery path
 
-{/* REVIEW: added per Blocker 1 — delivery delegated to async nudge queue */}
+<!-- REVIEW: added per Blocker 1 — delivery delegated to async nudge queue -->
 
 When a wait becomes `ready`, delivery is delegated to the async nudge queue. The wait does **not** close on enqueue. The lifecycle is:
 
@@ -707,7 +707,7 @@ If the target session bead is closed, open waits targeting it transition to `can
 
 #### Continuation epoch change
 
-{/* REVIEW: added per Major 11 — stale continuation handling */}
+<!-- REVIEW: added per Major 11 — stale continuation handling -->
 
 If the target session resets its conversation identity and increments `continuation_epoch`, open waits bound to the old epoch transition to `canceled` with reason `continuation-stale` and emit `wait.canceled`. Ordinary sleep/wake cycles do not affect wait validity.
 
@@ -744,7 +744,7 @@ Suppose the controller crashes after marking wait `w-17` as `ready` but before e
 
 Gas City still assumes one active controller per city, enforced by the existing lock. The wait subsystem preserves that assumption.
 
-{/* REVIEW: added per Major 9 — dedicated probe execution pool */}
+<!-- REVIEW: added per Major 9 — dedicated probe execution pool -->
 
 Required concurrency controls:
 
@@ -766,7 +766,7 @@ No extra mutexes are needed beyond existing controller single-threaded reconcili
 
 The design should optimize for the common case: many sleeping sessions, few due checks.
 
-{/* REVIEW: added per Major 13 — indexed selection for due waits */}
+<!-- REVIEW: added per Major 13 — indexed selection for due waits -->
 
 - Event waits scale with new events, not with total waits. The in-memory event fanout only touches waits with matching event type filters.
 - Dependency waits use a single `ListByIDs` call per tick and can be further optimized via event-driven invalidation using `bead.closed` events.
@@ -800,7 +800,7 @@ state without reaching a terminal nudge outcome and before any provider
 attempt boundary has been crossed. When exceeded, the synthetic nudge is
 treated as expired and the wait transitions to `failed(nudge-expired)`.
 
-{/* REVIEW: added per Major 9, Major 14 — probe pool, wall-time budget, retention */}
+<!-- REVIEW: added per Major 9, Major 14 — probe pool, wall-time budget, retention -->
 
 ### 12) Observability
 
@@ -817,7 +817,7 @@ Add event types:
 - `wait.evaluation_skipped`
 - `wait.evaluation_error`
 
-{/* REVIEW: added per Minor 18 — probe_failed and probe_exhausted events */}
+<!-- REVIEW: added per Minor 18 — probe_failed and probe_exhausted events -->
 
 CLI surfaces:
 
@@ -832,7 +832,7 @@ CLI surfaces:
 - `gc wait create --target <session>` — operator-level cross-session wait creation
 - `gc session list` shows waiting/ready-wait annotations, including `wait-hold` as a distinct reason
 
-{/* REVIEW: added per Blocker 6 — expanded CLI surfaces */}
+<!-- REVIEW: added per Blocker 6 — expanded CLI surfaces -->
 
 Dashboard/operator surfaces should show:
 
@@ -858,7 +858,7 @@ Existing cities keep working unchanged.
 
 The only controller-visible change is a new optional wake reason when ready waits exist.
 
-{/* REVIEW: added per Major 14 — garbage collection for terminal wait beads */}
+<!-- REVIEW: added per Major 14 — garbage collection for terminal wait beads -->
 
 ### 14) Garbage collection
 
@@ -866,7 +866,7 @@ Terminal wait beads (`closed`, `expired`, `canceled`, `failed`) are auto-pruned 
 
 Wait GC runs as bounded Phase 2e with `gc_deletes_per_tick` (default: 20) so retention cleanup cannot starve lifecycle or probe work.
 
-{/* REVIEW: added per Blocker 2 — prerequisite gates and rollout phasing */}
+<!-- REVIEW: added per Blocker 2 — prerequisite gates and rollout phasing -->
 
 ### 15) Prerequisites and rollout phasing
 
@@ -894,7 +894,7 @@ Rollback to a controller version that predates `wait_hold` handling is not trans
 
 Each phase has its own test gate (see §16).
 
-{/* REVIEW: added per Blocker 3 — mandatory test scenario matrix */}
+<!-- REVIEW: added per Blocker 3 — mandatory test scenario matrix -->
 
 ### 16) Mandatory test scenarios
 
@@ -976,7 +976,7 @@ The proposal reuses those primitives to express a blocked continuation. It does 
 
 ## Known Limitations
 
-{/* REVIEW: added per review — collecting minor items and missing evidence not addressed inline */}
+<!-- REVIEW: added per review — collecting minor items and missing evidence not addressed inline -->
 
 - **Rollback safety:** Downgrades across `wait_hold` semantics are operationally sensitive. Before rollback, operators must clear all active wait holds. Pending wait beads otherwise become inert until re-upgrade, and sleeping sessions may wake unexpectedly under older controllers.
 
