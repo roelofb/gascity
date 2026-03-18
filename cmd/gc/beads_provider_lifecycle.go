@@ -7,13 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
-	"github.com/gastownhall/gascity/internal/citylayout"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/hooks"
@@ -196,17 +198,19 @@ func healthBeadsProvider(cityPath string) error {
 // propagates the ephemeral port to all agent sessions.
 // No-op if GC_DOLT_PORT is already set.
 func readDoltPort(cityPath string) {
-	if os.Getenv("GC_DOLT_PORT") != "" {
-		return
-	}
 	if port := currentDoltPort(cityPath); port != "" {
 		_ = os.Setenv("GC_DOLT_PORT", port)
+		return
 	}
+	_ = os.Unsetenv("GC_DOLT_PORT")
 }
 
 type doltRuntimeState struct {
-	Running bool `json:"running"`
-	Port    int  `json:"port"`
+	Running   bool   `json:"running"`
+	PID       int    `json:"pid"`
+	Port      int    `json:"port"`
+	DataDir   string `json:"data_dir"`
+	StartedAt string `json:"started_at"`
 }
 
 // currentDoltPort returns the controller-managed Dolt port for the city.
@@ -214,24 +218,107 @@ type doltRuntimeState struct {
 // may be stale or missing in rig directories after restarts. Falls back to the
 // legacy city root port file for compatibility.
 func currentDoltPort(cityPath string) string {
-	statePath := filepath.Join(cityPath, ".gc", "runtime", "packs", "dolt", "dolt-state.json")
-	if data, err := os.ReadFile(statePath); err == nil {
-		var state doltRuntimeState
-		if json.Unmarshal(data, &state) == nil && state.Running && state.Port > 0 {
-			port := fmt.Sprintf("%d", state.Port)
-			writeDoltPortFile(cityPath, port)
-			return port
-		}
+	if port := currentManagedDoltPort(cityPath); port != "" {
+		writeDoltPortFile(cityPath, port)
+		return port
 	}
 
 	portFile := filepath.Join(cityPath, ".beads", "dolt-server.port")
 	if data, err := os.ReadFile(portFile); err == nil {
 		port := strings.TrimSpace(string(data))
-		if port != "" {
+		if port != "" && doltPortReachable(port) {
 			return port
 		}
+		_ = os.Remove(portFile)
 	}
 	return ""
+}
+
+func currentManagedDoltPort(cityPath string) string {
+	statePaths, err := filepath.Glob(filepath.Join(cityPath, ".gc", "runtime", "packs", "*", "dolt-state.json"))
+	if err != nil {
+		return ""
+	}
+	type candidate struct {
+		path  string
+		state doltRuntimeState
+	}
+	var candidates []candidate
+	for _, statePath := range statePaths {
+		data, err := os.ReadFile(statePath)
+		if err != nil {
+			continue
+		}
+		var state doltRuntimeState
+		if json.Unmarshal(data, &state) != nil {
+			continue
+		}
+		if !validDoltRuntimeState(state, cityPath) {
+			continue
+		}
+		candidates = append(candidates, candidate{path: statePath, state: state})
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	best := candidates[0]
+	bestTime := parseDoltStartedAt(best.state.StartedAt)
+	for _, cand := range candidates[1:] {
+		candTime := parseDoltStartedAt(cand.state.StartedAt)
+		if candTime.After(bestTime) || (candTime.Equal(bestTime) && strings.Contains(cand.path, "/packs/dolt/")) {
+			best = cand
+			bestTime = candTime
+		}
+	}
+	return strconv.Itoa(best.state.Port)
+}
+
+func parseDoltStartedAt(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+func validDoltRuntimeState(state doltRuntimeState, cityPath string) bool {
+	if !state.Running || state.Port <= 0 || state.PID <= 0 {
+		return false
+	}
+	expectedDataDir := filepath.Join(cityPath, ".beads", "dolt")
+	if state.DataDir != "" && state.DataDir != expectedDataDir {
+		return false
+	}
+	if !pidAlive(state.PID) {
+		return false
+	}
+	if !doltPortReachable(strconv.Itoa(state.Port)) {
+		return false
+	}
+	return true
+}
+
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func doltPortReachable(port string) bool {
+	if strings.TrimSpace(port) == "" {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", port), 250*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func writeDoltPortFile(dir, port string) {
@@ -248,15 +335,81 @@ func writeDoltPortFile(dir, port string) {
 	_ = os.WriteFile(portFile, []byte(port+"\n"), 0o644)
 }
 
-func syncConfiguredDoltPortFiles(cityPath string, rigs []config.Rig) {
-	port := currentDoltPort(cityPath)
-	if port == "" {
+func removeDoltPortFile(dir string) {
+	if dir == "" {
 		return
 	}
-	writeDoltPortFile(cityPath, port)
-	for i := range rigs {
-		writeDoltPortFile(rigs[i].Path, port)
+	_ = os.Remove(filepath.Join(dir, ".beads", "dolt-server.port"))
+}
+
+func syncConfiguredDoltPortFiles(cityPath string, rigs []config.Rig) {
+	port := currentDoltPort(cityPath)
+	normalizeManagedDoltConfig(cityPath)
+	if port != "" {
+		writeDoltPortFile(cityPath, port)
+	} else {
+		removeDoltPortFile(cityPath)
 	}
+	for i := range rigs {
+		normalizeManagedDoltConfig(rigs[i].Path)
+		if port != "" {
+			writeDoltPortFile(rigs[i].Path, port)
+		} else {
+			removeDoltPortFile(rigs[i].Path)
+		}
+	}
+}
+
+func normalizeManagedDoltConfig(dir string) {
+	configPath := filepath.Join(dir, ".beads", "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	out := make([]string, 0, len(lines)+1)
+	sawAutoStart := false
+	changed := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			out = append(out, line)
+			continue
+		}
+		key, _, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			out = append(out, line)
+			continue
+		}
+		key = strings.TrimSpace(key)
+		switch key {
+		case "dolt.port", "dolt_port", "dolt_server_port":
+			changed = true
+			continue
+		case "dolt.auto-start":
+			sawAutoStart = true
+			if trimmed != "dolt.auto-start: false" {
+				changed = true
+			}
+			out = append(out, "dolt.auto-start: false")
+		default:
+			out = append(out, line)
+		}
+	}
+	if !sawAutoStart {
+		if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
+			out = append(out, "")
+		}
+		out = append(out, "dolt.auto-start: false")
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	_ = os.WriteFile(configPath, []byte(strings.Join(out, "\n")), 0o644)
 }
 
 // runProviderProbe runs a "probe" operation against an exec beads script.
@@ -270,7 +423,7 @@ func runProviderProbe(script, cityPath string) bool {
 	cmd := exec.CommandContext(ctx, script, "probe")
 	cmd.WaitDelay = 2 * time.Second
 	if cityPath != "" {
-		cmd.Env = append(os.Environ(), citylayout.CityRuntimeEnv(cityPath)...)
+		cmd.Env = cityRuntimeProcessEnv(cityPath)
 	}
 	return cmd.Run() == nil
 }
@@ -304,7 +457,7 @@ func runProviderOp(script, cityPath string, args ...string) error {
 	cmd := exec.CommandContext(ctx, script, args...)
 	cmd.WaitDelay = 2 * time.Second
 	if cityPath != "" {
-		cmd.Env = append(os.Environ(), citylayout.CityRuntimeEnv(cityPath)...)
+		cmd.Env = cityRuntimeProcessEnv(cityPath)
 	}
 
 	var stderr bytes.Buffer

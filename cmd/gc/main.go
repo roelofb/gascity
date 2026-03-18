@@ -285,15 +285,23 @@ func openCityStore(stderr io.Writer, cmdName string) (beads.Store, int) {
 // Used by the controller (which already knows the city path) and by
 // openCityStore (which resolves the path first).
 func openCityStoreAt(cityPath string) (beads.Store, error) {
-	provider := rawBeadsProvider(cityPath)
+	return openStoreAtForCity(cityPath, cityForStoreDir(cityPath))
+}
+
+func openStoreAtForCity(storePath, cityPath string) (beads.Store, error) {
+	runtimeCityPath := cityPath
+	if runtimeCityPath == "" {
+		runtimeCityPath = cityForStoreDir(storePath)
+	}
+	provider := rawBeadsProvider(runtimeCityPath)
 	if strings.HasPrefix(provider, "exec:") {
 		store := beadsexec.NewStore(strings.TrimPrefix(provider, "exec:"))
-		store.SetEnv(citylayout.CityRuntimeEnvMap(cityPath))
+		store.SetEnv(citylayout.CityRuntimeEnvMap(runtimeCityPath))
 		return store, nil
 	}
 	switch provider {
 	case "file":
-		store, err := beads.OpenFileStore(fsys.OSFS{}, filepath.Join(cityPath, ".gc", "beads.json"))
+		store, err := beads.OpenFileStore(fsys.OSFS{}, filepath.Join(runtimeCityPath, ".gc", "beads.json"))
 		if err != nil {
 			return nil, err
 		}
@@ -302,6 +310,6 @@ func openCityStoreAt(cityPath string) (beads.Store, error) {
 		if _, err := exec.LookPath("bd"); err != nil {
 			return nil, fmt.Errorf("bd not found in PATH (install beads or set GC_BEADS=file)")
 		}
-		return beads.NewBdStore(cityPath, beads.ExecCommandRunner()), nil
+		return bdStoreForCity(storePath, runtimeCityPath), nil
 	}
 }

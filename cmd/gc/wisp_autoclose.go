@@ -40,7 +40,7 @@ func doWispAutoclose(beadID string, stdout, _ io.Writer) {
 	if err != nil {
 		return
 	}
-	store := beads.NewBdStore(cwd, beads.ExecCommandRunner())
+	store := bdStoreForDir(cwd)
 	doWispAutocloseWith(store, beadID, stdout)
 }
 

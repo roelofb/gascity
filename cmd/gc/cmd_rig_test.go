@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/fsys"
@@ -143,10 +146,21 @@ func TestDoRigAdd_WritesPortFileForExternalRig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc", "runtime", "packs", "dolt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(cityPath, ".beads"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "dolt-server.port"), []byte("43699\n"), 0o644); err != nil {
+	ln := listenOnRandomPort(t)
+	t.Cleanup(func() { _ = ln.Close() })
+	if err := writeDoltState(cityPath, doltRuntimeState{
+		Running:   true,
+		PID:       os.Getpid(),
+		Port:      ln.Addr().(*net.TCPAddr).Port,
+		DataDir:   filepath.Join(cityPath, ".beads", "dolt"),
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -173,8 +187,8 @@ func TestDoRigAdd_WritesPortFileForExternalRig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading rig port file: %v", err)
 	}
-	if got := strings.TrimSpace(string(data)); got != "43699" {
-		t.Fatalf("rig port file = %q, want %q", got, "43699")
+	if got := strings.TrimSpace(string(data)); got != fmt.Sprintf("%d", ln.Addr().(*net.TCPAddr).Port) {
+		t.Fatalf("rig port file = %q, want %d", got, ln.Addr().(*net.TCPAddr).Port)
 	}
 }
 

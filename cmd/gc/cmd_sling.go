@@ -266,7 +266,7 @@ func cmdSling(args []string, isFormula, doNudge, force bool, title string, vars 
 	if rd := rigDirForAgent(cfg, a); rd != "" {
 		storeDir = rd
 	}
-	store := beads.NewBdStore(storeDir, beads.ExecCommandRunner())
+	store := bdStoreForCity(storeDir, cityPath)
 
 	// Inline text mode: if the argument doesn't look like a bead ID
 	// (and we're not in formula mode), create a task bead from the text.

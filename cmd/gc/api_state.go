@@ -125,18 +125,18 @@ func beadsProviderFor(cfg *config.City) string {
 func (cs *controllerState) openRigStore(provider, rigPath string) beads.Store {
 	if strings.HasPrefix(provider, "exec:") {
 		s := beadsexec.NewStore(strings.TrimPrefix(provider, "exec:"))
-		s.SetEnv(citylayout.CityRuntimeEnvMap(rigPath))
+		s.SetEnv(citylayout.CityRuntimeEnvMap(cs.cityPath))
 		return s
 	}
 	switch provider {
 	case "file":
 		store, err := beads.OpenFileStore(fsys.OSFS{}, filepath.Join(cs.cityPath, ".gc", "beads.json"))
 		if err != nil {
-			return beads.NewBdStore(rigPath, beads.ExecCommandRunner())
+			return bdStoreForCity(rigPath, cs.cityPath)
 		}
 		return store
 	default: // "bd" or unrecognized
-		return beads.NewBdStore(rigPath, beads.ExecCommandRunner())
+		return bdStoreForCity(rigPath, cs.cityPath)
 	}
 }
 

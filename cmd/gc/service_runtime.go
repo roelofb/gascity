@@ -52,7 +52,7 @@ func (rt *serviceRuntime) BeadStore(rig string) beads.Store {
 	}
 	for _, candidate := range cfg.Rigs {
 		if candidate.Name == rig {
-			return beads.NewBdStore(candidate.Path, beads.ExecCommandRunner())
+			return bdStoreForCity(candidate.Path, rt.cr.cityPath)
 		}
 	}
 	return nil

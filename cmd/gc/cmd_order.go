@@ -405,7 +405,7 @@ func cmdOrderRun(name, rig string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gc order run: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
-	store := beads.NewBdStore(cityPath, beads.ExecCommandRunner())
+	store := bdStoreForCity(cityPath, cityPath)
 
 	ep, epCode := openCityEventsProvider(stderr, "gc order run")
 	if ep == nil {
@@ -506,7 +506,7 @@ func cmdOrderCheck(stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gc order check: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
-	store := beads.NewBdStore(cityPath, beads.ExecCommandRunner())
+	store := bdStoreForCity(cityPath, cityPath)
 	lastRunFn := orderLastRunFn(store)
 	cursorFn := bdCursorFunc(store)
 
@@ -585,7 +585,7 @@ func cmdOrderHistory(name, rig string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "gc order history: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
-	store := beads.NewBdStore(cityPath, beads.ExecCommandRunner())
+	store := bdStoreForCity(cityPath, cityPath)
 	return doOrderHistory(name, rig, aa, store, stdout)
 }
 

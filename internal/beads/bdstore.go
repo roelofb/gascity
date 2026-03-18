@@ -24,10 +24,20 @@ type CommandRunner func(dir, name string, args ...string) ([]byte, error)
 // Captures stdout for parsing and stderr for error diagnostics.
 // When the command is "bd", records telemetry (duration, status, output).
 func ExecCommandRunner() CommandRunner {
+	return ExecCommandRunnerWithEnv(nil)
+}
+
+// ExecCommandRunnerWithEnv returns a CommandRunner that uses os/exec and
+// applies the provided environment overrides. Explicit keys replace any
+// inherited values from the parent process.
+func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 	return func(dir, name string, args ...string) ([]byte, error) {
 		start := time.Now()
 		cmd := exec.Command(name, args...)
 		cmd.Dir = dir
+		if len(env) > 0 {
+			cmd.Env = mergeEnv(os.Environ(), env)
+		}
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
@@ -269,6 +279,23 @@ func envWithout(environ []string, key string) []string {
 		if !strings.HasPrefix(e, prefix) {
 			out = append(out, e)
 		}
+	}
+	return out
+}
+
+func mergeEnv(environ []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return append([]string(nil), environ...)
+	}
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := append([]string(nil), environ...)
+	for _, key := range keys {
+		out = envWithout(out, key)
+		out = append(out, key+"="+overrides[key])
 	}
 	return out
 }

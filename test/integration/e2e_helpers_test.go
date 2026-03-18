@@ -210,6 +210,13 @@ func setupE2ECity(t *testing.T, guard *tmuxtest.Guard, city e2eCity) string {
 	if err != nil {
 		t.Fatalf("gc init failed: %v\noutput: %s", err, out)
 	}
+	// gc init now registers and starts the default tutorial city immediately.
+	// E2E helpers overwrite city.toml right after init, so stop the seeded city
+	// first to ensure the later gc start uses the test config we just wrote.
+	out, err = gc("", "stop", cityDir)
+	if err != nil {
+		t.Fatalf("gc stop after init failed: %v\noutput: %s", err, out)
+	}
 
 	// Copy agent scripts into .gc/scripts/ so they're accessible
 	// inside Docker/K8s containers (which mount cityDir).
@@ -247,6 +254,11 @@ func setupE2ECityNoStart(t *testing.T, city e2eCity) string {
 	out, err := gc("", "init", cityDir)
 	if err != nil {
 		t.Fatalf("gc init failed: %v\noutput: %s", err, out)
+	}
+	// Reset the city to a quiescent state before the helper rewrites city.toml.
+	out, err = gc("", "stop", cityDir)
+	if err != nil {
+		t.Fatalf("gc stop after init failed: %v\noutput: %s", err, out)
 	}
 
 	copyE2EScripts(t, cityDir)

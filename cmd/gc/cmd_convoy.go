@@ -99,7 +99,7 @@ func cmdConvoyCreateWithFields(args []string, fields ConvoyFields, stdout, stder
 			storeDir = rd
 		}
 	}
-	store, err := openCityStoreAt(storeDir)
+	store, err := openStoreAtForCity(storeDir, cityPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc convoy create: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
@@ -119,7 +119,7 @@ func doConvoyCreate(store beads.Store, rec events.Recorder, args []string, stdou
 // The convoy bead is created in the city root store. Child beads may live
 // in different rig stores — each child is resolved to its rig store by
 // bead prefix.
-func doConvoyCreateWith(store beads.Store, cfg *config.City, _ string, rec events.Recorder, args []string, fields ConvoyFields, stdout, stderr io.Writer) int {
+func doConvoyCreateWith(store beads.Store, cfg *config.City, cityPath string, rec events.Recorder, args []string, fields ConvoyFields, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "gc convoy create: missing convoy name") //nolint:errcheck // best-effort stderr
 		return 1
@@ -151,7 +151,7 @@ func doConvoyCreateWith(store beads.Store, cfg *config.City, _ string, rec event
 		childStore := store
 		if cfg != nil {
 			if rd := rigDirForBead(cfg, id); rd != "" {
-				if rs, err := openCityStoreAt(rd); err == nil {
+				if rs, err := openStoreAtForCity(rd, cityPath); err == nil {
 					childStore = rs
 				}
 			}
@@ -763,7 +763,7 @@ func doConvoyAutoclose(beadID string, stdout, stderr io.Writer) {
 	if err != nil {
 		return
 	}
-	store := beads.NewBdStore(cwd, beads.ExecCommandRunner())
+	store := bdStoreForDir(cwd)
 	rec := openCityRecorder(stderr)
 	doConvoyAutocloseWith(store, rec, beadID, stdout, stderr)
 }

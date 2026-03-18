@@ -1,12 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/config"
 )
@@ -83,11 +86,16 @@ func TestCurrentDoltPortPrefersRuntimeState(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cityDir, ".beads"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(
-		filepath.Join(cityDir, ".gc", "runtime", "packs", "dolt", "dolt-state.json"),
-		[]byte(`{"running":true,"pid":123,"port":43699}`),
-		0o644,
-	); err != nil {
+	ln := listenOnRandomPort(t)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	if err := writeDoltState(cityDir, doltRuntimeState{
+		Running:   true,
+		PID:       os.Getpid(),
+		Port:      ln.Addr().(*net.TCPAddr).Port,
+		DataDir:   filepath.Join(cityDir, ".beads", "dolt"),
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(cityDir, ".beads", "dolt-server.port"), []byte("38427\n"), 0o644); err != nil {
@@ -95,16 +103,16 @@ func TestCurrentDoltPortPrefersRuntimeState(t *testing.T) {
 	}
 
 	got := currentDoltPort(cityDir)
-	if got != "43699" {
-		t.Fatalf("currentDoltPort() = %q, want %q", got, "43699")
+	if got != fmt.Sprintf("%d", ln.Addr().(*net.TCPAddr).Port) {
+		t.Fatalf("currentDoltPort() = %q, want %d", got, ln.Addr().(*net.TCPAddr).Port)
 	}
 
 	data, err := os.ReadFile(filepath.Join(cityDir, ".beads", "dolt-server.port"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(data)) != "43699" {
-		t.Fatalf("city port file = %q, want %q", strings.TrimSpace(string(data)), "43699")
+	if strings.TrimSpace(string(data)) != fmt.Sprintf("%d", ln.Addr().(*net.TCPAddr).Port) {
+		t.Fatalf("city port file = %q, want %d", strings.TrimSpace(string(data)), ln.Addr().(*net.TCPAddr).Port)
 	}
 }
 
@@ -114,11 +122,25 @@ func TestSyncConfiguredDoltPortFilesWritesArbitraryRigPaths(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cityDir, ".gc", "runtime", "packs", "dolt"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(
-		filepath.Join(cityDir, ".gc", "runtime", "packs", "dolt", "dolt-state.json"),
-		[]byte(`{"running":true,"pid":123,"port":43699}`),
-		0o644,
-	); err != nil {
+	ln := listenOnRandomPort(t)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	for _, dir := range []string{cityDir, rigDir} {
+		if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".beads", "config.yaml"), []byte("dolt.port: 1234\ndolt.auto-start: true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := writeDoltState(cityDir, doltRuntimeState{
+		Running:   true,
+		PID:       os.Getpid(),
+		Port:      ln.Addr().(*net.TCPAddr).Port,
+		DataDir:   filepath.Join(cityDir, ".beads", "dolt"),
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,9 +151,75 @@ func TestSyncConfiguredDoltPortFilesWritesArbitraryRigPaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read port file for %s: %v", dir, err)
 		}
-		if strings.TrimSpace(string(data)) != "43699" {
-			t.Fatalf("%s port file = %q, want %q", dir, strings.TrimSpace(string(data)), "43699")
+		if strings.TrimSpace(string(data)) != fmt.Sprintf("%d", ln.Addr().(*net.TCPAddr).Port) {
+			t.Fatalf("%s port file = %q, want %d", dir, strings.TrimSpace(string(data)), ln.Addr().(*net.TCPAddr).Port)
 		}
+		cfgData, err := os.ReadFile(filepath.Join(dir, ".beads", "config.yaml"))
+		if err != nil {
+			t.Fatalf("read config for %s: %v", dir, err)
+		}
+		cfg := string(cfgData)
+		if strings.Contains(cfg, "dolt.port:") {
+			t.Fatalf("%s config still contains dolt.port:\n%s", dir, cfg)
+		}
+		if !strings.Contains(cfg, "dolt.auto-start: false") {
+			t.Fatalf("%s config missing dolt.auto-start normalization:\n%s", dir, cfg)
+		}
+	}
+}
+
+func TestCurrentDoltPortIgnoresDeadRuntimeStateAndPrunesDeadPortFile(t *testing.T) {
+	cityDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityDir, ".gc", "runtime", "packs", "dolt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cityDir, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ln := listenOnRandomPort(t)
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	if err := writeDoltState(cityDir, doltRuntimeState{
+		Running: true,
+		PID:     os.Getpid(),
+		Port:    port,
+		DataDir: filepath.Join(cityDir, ".beads", "dolt"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityDir, ".beads", "dolt-server.port"), []byte(fmt.Sprintf("%d\n", port)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := currentDoltPort(cityDir); got != "" {
+		t.Fatalf("currentDoltPort() = %q, want empty for dead runtime state", got)
+	}
+	if _, err := os.Stat(filepath.Join(cityDir, ".beads", "dolt-server.port")); !os.IsNotExist(err) {
+		t.Fatalf("stale port file should be removed, stat err = %v", err)
+	}
+}
+
+func TestReadDoltPortOverwritesInheritedValue(t *testing.T) {
+	cityDir := t.TempDir()
+	ln := listenOnRandomPort(t)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	if err := writeDoltState(cityDir, doltRuntimeState{
+		Running:   true,
+		PID:       os.Getpid(),
+		Port:      ln.Addr().(*net.TCPAddr).Port,
+		DataDir:   filepath.Join(cityDir, ".beads", "dolt"),
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GC_DOLT_PORT", "9999")
+	readDoltPort(cityDir)
+	if got := os.Getenv("GC_DOLT_PORT"); got != fmt.Sprintf("%d", ln.Addr().(*net.TCPAddr).Port) {
+		t.Fatalf("GC_DOLT_PORT = %q, want %d", got, ln.Addr().(*net.TCPAddr).Port)
 	}
 }
 
@@ -217,6 +305,26 @@ func TestRunProviderOp_setsCityRuntimeEnv(t *testing.T) {
 	}
 	if err := runProviderOp(script, dir, "health"); err != nil {
 		t.Fatalf("expected city runtime env to be set, got %v", err)
+	}
+}
+
+func TestRunProviderOpSanitizesInheritedRuntimeEnv(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "sanitize-env.sh")
+	content := "#!/bin/sh\n" +
+		"test \"$GC_CITY_PATH\" = \"" + dir + "\" || exit 1\n" +
+		"test \"$GC_CITY_ROOT\" = \"" + dir + "\" || exit 1\n" +
+		"test \"$GC_CITY_RUNTIME_DIR\" = \"" + filepath.Join(dir, ".gc", "runtime") + "\" || exit 1\n" +
+		"test -z \"$GC_PACK_STATE_DIR\" || exit 1\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GC_CITY_PATH", "/wrong")
+	t.Setenv("GC_CITY_ROOT", "/wrong")
+	t.Setenv("GC_CITY_RUNTIME_DIR", "/wrong/.gc/runtime")
+	t.Setenv("GC_PACK_STATE_DIR", "/wrong/.gc/runtime/packs/dolt")
+	if err := runProviderOp(script, dir, "health"); err != nil {
+		t.Fatalf("expected sanitized runtime env, got %v", err)
 	}
 }
 
@@ -330,6 +438,25 @@ func TestGcBeadsBdStartUsesRootBeadsDataDir(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cityPath, ".beads", "dolt-server.port")); err != nil {
 		t.Fatalf("dolt-server.port missing: %v", err)
 	}
+}
+
+func listenOnRandomPort(t *testing.T) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	return ln
+}
+
+func writeDoltState(cityPath string, state doltRuntimeState) error {
+	stateDir := filepath.Join(cityPath, ".gc", "runtime", "packs", "dolt")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return err
+	}
+	data := fmt.Sprintf(`{"running":%t,"pid":%d,"port":%d,"data_dir":%q,"started_at":%q}`,
+		state.Running, state.PID, state.Port, state.DataDir, state.StartedAt)
+	return os.WriteFile(filepath.Join(stateDir, "dolt-state.json"), []byte(data), 0o644)
 }
 
 // writeTestScript creates a shell script that exits with the given code.

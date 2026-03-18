@@ -111,10 +111,10 @@ func newCityRuntime(p CityRuntimeParams) *CityRuntime {
 	var wg wispGC
 	if p.Cfg.Daemon.WispGCEnabled() {
 		wg = newWispGC(p.Cfg.Daemon.WispGCIntervalDuration(),
-			p.Cfg.Daemon.WispTTLDuration(), beads.ExecCommandRunner())
+			p.Cfg.Daemon.WispTTLDuration(), bdCommandRunnerForCity(p.CityPath))
 	}
 
-	od := buildOrderDispatcher(p.CityPath, p.Cfg, beads.ExecCommandRunner(), p.Rec, p.Stderr)
+	od := buildOrderDispatcher(p.CityPath, p.Cfg, bdCommandRunnerForCity(p.CityPath), p.Rec, p.Stderr)
 
 	suspendedNames := computeSuspendedNames(p.Cfg, p.CityName, p.CityPath)
 
@@ -485,12 +485,12 @@ func (cr *CityRuntime) reloadConfig(
 
 	if nextCfg.Daemon.WispGCEnabled() {
 		cr.wg = newWispGC(nextCfg.Daemon.WispGCIntervalDuration(),
-			nextCfg.Daemon.WispTTLDuration(), beads.ExecCommandRunner())
+			nextCfg.Daemon.WispTTLDuration(), bdCommandRunnerForCity(cityRoot))
 	} else {
 		cr.wg = nil
 	}
 
-	cr.od = buildOrderDispatcher(cityRoot, nextCfg, beads.ExecCommandRunner(), cr.rec, cr.stderr)
+	cr.od = buildOrderDispatcher(cityRoot, nextCfg, bdCommandRunnerForCity(cityRoot), cr.rec, cr.stderr)
 
 	cr.serviceStateMu.Lock()
 	cr.cfg = nextCfg

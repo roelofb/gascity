@@ -191,18 +191,19 @@ func collectPackDirs(cfg *config.City) []string {
 // openStore creates a beads.Store from a directory path. Used as a factory
 // for doctor checks that need to verify store accessibility.
 func openStore(dirPath string) (beads.Store, error) {
-	prov := rawBeadsProvider(dirPath)
+	cityPath := cityForStoreDir(dirPath)
+	prov := rawBeadsProvider(cityPath)
 	switch {
 	case strings.HasPrefix(prov, "exec:"):
 		store := beadsexec.NewStore(strings.TrimPrefix(prov, "exec:"))
-		store.SetEnv(citylayout.CityRuntimeEnvMap(dirPath))
+		store.SetEnv(citylayout.CityRuntimeEnvMap(cityPath))
 		return store, nil
 	case prov == "file":
-		return beads.OpenFileStore(fsys.OSFS{}, filepath.Join(dirPath, ".gc", "beads.json"))
+		return beads.OpenFileStore(fsys.OSFS{}, filepath.Join(cityPath, ".gc", "beads.json"))
 	default: // "bd"
 		if _, err := exec.LookPath("bd"); err != nil {
 			return nil, fmt.Errorf("bd not found in PATH")
 		}
-		return beads.NewBdStore(dirPath, beads.ExecCommandRunner()), nil
+		return bdStoreForCity(dirPath, cityPath), nil
 	}
 }
