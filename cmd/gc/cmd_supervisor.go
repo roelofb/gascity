@@ -415,7 +415,8 @@ func runSupervisor(stdout, stderr io.Writer) int {
 	// Start API server with city-namespaced routing (Phase 2).
 	startedAt := time.Now()
 	initStatusMap := make(map[string]cityInitProgress)
-	mcs := &multiCityState{cities: cities, initStatus: initStatusMap, mu: &mu, startedAt: startedAt}
+	initFailuresMap := make(map[string]*initFailRecord)
+	mcs := &multiCityState{cities: cities, initStatus: initStatusMap, initFailures: initFailuresMap, mu: &mu, startedAt: startedAt}
 	bind := supCfg.Supervisor.BindOrDefault()
 	port := supCfg.Supervisor.PortOrDefault()
 	nonLocal := bind != "127.0.0.1" && bind != "localhost" && bind != "::1"
@@ -467,7 +468,7 @@ func runSupervisor(stdout, stderr io.Writer) int {
 	panicHistory := make(map[string]*panicRecord)
 	// Init failure backoff tracking — prevents log spam when a city
 	// has a broken config or missing dependencies.
-	initFailures := make(map[string]*initFailRecord)
+	initFailures := mcs.initFailures
 
 	// safeReconcile wraps reconcileCities with panic recovery so a bug
 	// in the reconciliation loop doesn't crash the entire supervisor.
@@ -537,6 +538,7 @@ type initFailRecord struct {
 	count     int
 	backoff   time.Time
 	configMod time.Time // mtime of city.toml at last failure
+	lastError string    // last error message for user-facing feedback
 }
 
 // reconcileCities compares the registry against running cities and
@@ -716,6 +718,7 @@ func reconcileCities(
 				}
 				ifrec.backoff = time.Now().Add(delay)
 				ifrec.configMod = configMod
+				ifrec.lastError = msg
 				fmt.Fprintf(stderr, "gc supervisor: city '%s': init failure #%d, next retry in %s\n", cityName, ifrec.count, delay) //nolint:errcheck
 			}()
 		}
@@ -1096,10 +1099,11 @@ type cityInitProgress struct {
 // It provides city lookup by name and city listing for the
 // SupervisorMux routing layer.
 type multiCityState struct {
-	cities     map[string]*managedCity
-	initStatus map[string]cityInitProgress
-	mu         *sync.RWMutex
-	startedAt  time.Time
+	cities       map[string]*managedCity
+	initStatus   map[string]cityInitProgress
+	initFailures map[string]*initFailRecord
+	mu           *sync.RWMutex
+	startedAt    time.Time
 }
 
 // ListCities returns info about all managed cities.
@@ -1129,6 +1133,20 @@ func (m *multiCityState) ListCities() []api.CityInfo {
 			Name:   ip.name,
 			Path:   path,
 			Status: ip.status,
+		})
+		seen[path] = true
+	}
+	// Expose cities stuck in init-failure backoff so callers (gc init wait,
+	// gc status) can see why the city isn't starting.
+	for path, rec := range m.initFailures {
+		if seen[path] {
+			continue
+		}
+		out = append(out, api.CityInfo{
+			Name:   filepath.Base(path),
+			Path:   path,
+			Status: "init_failed",
+			Error:  rec.lastError,
 		})
 	}
 	return out

@@ -38,6 +38,23 @@ func finalizeInit(cityPath string, stdout, stderr io.Writer, opts initFinalizeOp
 	MaterializeBeadsBdScript(cityPath) //nolint:errcheck // best-effort; only needed for bd provider
 	MaterializeBuiltinPacks(cityPath)  //nolint:errcheck // best-effort; only needed for bd provider
 
+	// Check hard binary dependencies before handing off to the supervisor.
+	// Without this, missing deps (tmux, git, dolt, bd) cause the supervisor
+	// to fail-loop silently — the user never sees the error.
+	if missing := checkHardDependencies(cityPath); len(missing) > 0 {
+		fmt.Fprintf(stderr, "%s: missing required dependencies:\n\n", opts.commandName) //nolint:errcheck // best-effort stderr
+		for _, dep := range missing {
+			fmt.Fprintf(stderr, "  - %s", dep.name) //nolint:errcheck // best-effort stderr
+			if dep.installHint != "" {
+				fmt.Fprintf(stderr, "\n    Install: %s", dep.installHint) //nolint:errcheck // best-effort stderr
+			}
+			fmt.Fprintln(stderr) //nolint:errcheck // best-effort stderr
+		}
+		fmt.Fprintln(stderr) //nolint:errcheck // best-effort stderr
+		fmt.Fprintf(stderr, "%s: install the missing dependencies, then run 'gc start'\n", opts.commandName) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+
 	if opts.showProgress {
 		if opts.skipProviderReadiness {
 			logInitProgress(stdout, 6, "Skipping provider readiness checks")
@@ -383,4 +400,64 @@ func shellQuoteWindowsPath(path string) string {
 		return path
 	}
 	return `"` + strings.ReplaceAll(path, `"`, `""`) + `"`
+}
+
+// missingDep describes a hard dependency that was not found on the system.
+type missingDep struct {
+	name        string
+	installHint string
+}
+
+// initLookPath is the exec.LookPath function used by checkHardDependencies.
+// Tests can override this to simulate missing binaries.
+var initLookPath = exec.LookPath
+
+// checkHardDependencies verifies that all required binaries are available
+// before handing off to the supervisor. Returns a list of missing deps.
+// Without this check, missing binaries cause the supervisor to fail-loop
+// silently and the user never sees the actual error.
+func checkHardDependencies(cityPath string) []missingDep {
+	type dep struct {
+		name        string
+		installHint string
+		condition   func() bool // if non-nil, only checked when true
+	}
+
+	beadsProvider := rawBeadsProvider(cityPath)
+	needsBd := beadsProvider == "bd" || beadsProvider == ""
+
+	deps := []dep{
+		{
+			name:        "tmux",
+			installHint: "https://github.com/tmux/tmux/wiki/Installing",
+		},
+		{
+			name:        "git",
+			installHint: "https://git-scm.com/downloads",
+		},
+		{
+			name:        "dolt",
+			installHint: "https://github.com/dolthub/dolt/releases",
+			condition:   func() bool { return needsBd },
+		},
+		{
+			name:        "bd",
+			installHint: "https://github.com/gastownhall/beads/releases",
+			condition:   func() bool { return needsBd },
+		},
+	}
+
+	var missing []missingDep
+	for _, d := range deps {
+		if d.condition != nil && !d.condition() {
+			continue
+		}
+		if _, err := initLookPath(d.name); err != nil {
+			missing = append(missing, missingDep{
+				name:        d.name,
+				installHint: d.installHint,
+			})
+		}
+	}
+	return missing
 }

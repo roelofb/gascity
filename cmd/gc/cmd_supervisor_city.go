@@ -226,6 +226,14 @@ func waitForSupervisorCity(cityPath string, wantRunning bool, timeout time.Durat
 			if !wantRunning {
 				return fmt.Errorf("city is still running under supervisor")
 			}
+			// If the supervisor reports an init failure, surface the
+			// error immediately instead of polling until timeout.
+			if wantRunning && status == "init_failed" {
+				if errMsg := supervisorCityError(cityPath); errMsg != "" {
+					return fmt.Errorf("city failed to start: %s", errMsg)
+				}
+				return fmt.Errorf("city failed to start under supervisor")
+			}
 		} else if !wantRunning {
 			return nil
 		}
@@ -241,6 +249,30 @@ func waitForSupervisorCity(cityPath string, wantRunning bool, timeout time.Durat
 		}
 		time.Sleep(supervisorCityPollInterval)
 	}
+}
+
+// supervisorCityError fetches the error message for a city from the supervisor API.
+func supervisorCityError(cityPath string) string {
+	baseURL, err := supervisorAPIBaseURL()
+	if err != nil {
+		return ""
+	}
+	client := api.NewClient(baseURL)
+	cities, err := client.ListCities()
+	if err != nil {
+		return ""
+	}
+	normalized, err := normalizeRegisteredCityPath(cityPath)
+	if err != nil {
+		return ""
+	}
+	for _, city := range cities {
+		path, pathErr := normalizeRegisteredCityPath(city.Path)
+		if pathErr == nil && path == normalized {
+			return city.Error
+		}
+	}
+	return ""
 }
 
 // statusDisplayText maps an init status string to a human-readable display line.
