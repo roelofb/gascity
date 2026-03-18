@@ -665,14 +665,26 @@ func (c *DoltServerCheck) Run(_ *CheckContext) *CheckResult {
 		return r
 	}
 
-	// Determine host and port from environment (same defaults as gc-beads-bd).
+	// Determine host and port.
+	// Priority: GC_DOLT_PORT env → .beads/dolt-server.port file → error.
+	// The old default of 3307 was wrong — gc-beads-bd uses hashed ephemeral
+	// ports, not the default MySQL port.
 	host := os.Getenv("GC_DOLT_HOST")
 	if host == "" {
 		host = "127.0.0.1"
 	}
 	port := os.Getenv("GC_DOLT_PORT")
 	if port == "" {
-		port = "3307"
+		portFile := filepath.Join(c.cityPath, ".beads", "dolt-server.port")
+		if data, err := os.ReadFile(portFile); err == nil {
+			port = strings.TrimSpace(string(data))
+		}
+	}
+	if port == "" {
+		r.Status = StatusWarning
+		r.Message = "dolt server port unknown (no GC_DOLT_PORT and no .beads/dolt-server.port)"
+		r.FixHint = "run gc start to start the dolt server"
+		return r
 	}
 	addr := net.JoinHostPort(host, port)
 
