@@ -24,6 +24,8 @@ var convoyFieldKeys = [...]struct {
 	{"convoy.notify", func(f *ConvoyFields) string { return f.Notify }, func(f *ConvoyFields, v string) { f.Notify = v }},
 	{"convoy.molecule", func(f *ConvoyFields) string { return f.Molecule }, func(f *ConvoyFields, v string) { f.Molecule = v }},
 	{"convoy.merge", func(f *ConvoyFields) string { return f.Merge }, func(f *ConvoyFields, v string) { f.Merge = v }},
+	// target is intentionally unprefixed so any bead can inherit it by walking
+	// the parent chain in beadMetadataTarget.
 	{"target", func(f *ConvoyFields) string { return f.Target }, func(f *ConvoyFields, v string) { f.Target = v }},
 }
 

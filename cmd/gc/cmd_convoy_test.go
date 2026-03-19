@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/events"
 )
 
@@ -299,6 +300,36 @@ func TestConvoyTarget(t *testing.T) {
 	}
 	if got := b.Metadata["target"]; got != "integration/gc-1" {
 		t.Fatalf("target metadata = %q, want %q", got, "integration/gc-1")
+	}
+}
+
+func TestConvoyStoreDirUsesRigPathForPrefixedIDsOnBd(t *testing.T) {
+	t.Setenv("GC_BEADS", "bd")
+	cfg := &config.City{
+		Rigs: []config.Rig{{
+			Name:   "hello-world",
+			Path:   "/rigs/hello-world",
+			Prefix: "HW",
+		}},
+	}
+
+	if got := convoyStoreDir(cfg, "/city", "HW-42"); got != "/rigs/hello-world" {
+		t.Fatalf("convoyStoreDir = %q, want %q", got, "/rigs/hello-world")
+	}
+}
+
+func TestConvoyStoreDirKeepsFileProviderCityScoped(t *testing.T) {
+	t.Setenv("GC_BEADS", "file")
+	cfg := &config.City{
+		Rigs: []config.Rig{{
+			Name:   "hello-world",
+			Path:   "/rigs/hello-world",
+			Prefix: "HW",
+		}},
+	}
+
+	if got := convoyStoreDir(cfg, "/city", "HW-42"); got != "/city" {
+		t.Fatalf("convoyStoreDir = %q, want %q", got, "/city")
 	}
 }
 

@@ -84,6 +84,17 @@ func doGraph(store beads.Store, args []string, opts graphOpts, stdout, stderr io
 		return 1
 	}
 
+	for _, arg := range args {
+		b, err := store.Get(arg)
+		if err != nil {
+			fmt.Fprintf(stderr, "gc graph: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
+		if b.Type == "epic" {
+			fmt.Fprintf(stderr, "gc graph: epic %s is treated as an ordinary bead; convoy expansion is first-class\n", b.ID) //nolint:errcheck // best-effort stderr
+		}
+	}
+
 	// Resolve input — expand containers, returning beads directly.
 	resolved, err := resolveGraphInput(store, args)
 	if err != nil {

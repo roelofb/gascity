@@ -115,6 +115,9 @@ func TestGraphEpicIsTreatedAsOrdinaryBead(t *testing.T) {
 	if strings.Contains(out, "story 1") || strings.Contains(out, "story 2") {
 		t.Errorf("epic children should not be expanded:\n%s", out)
 	}
+	if !strings.Contains(stderr.String(), "treated as an ordinary bead") {
+		t.Errorf("stderr = %q, want epic note", stderr.String())
+	}
 }
 
 func TestGraphMissingArgs(t *testing.T) {

@@ -239,6 +239,39 @@ func cmdConvoyList(stdout, stderr io.Writer) int {
 	return doConvoyList(store, stdout, stderr)
 }
 
+func convoyStoreDir(cfg *config.City, cityPath, beadID string) string {
+	if rawBeadsProvider(cityPath) == "file" {
+		return cityPath
+	}
+	if cfg != nil {
+		if rd := rigDirForBead(cfg, beadID); rd != "" {
+			return rd
+		}
+	}
+	return cityPath
+}
+
+func openConvoyStoreByID(convoyID string, stderr io.Writer, cmdName string) (beads.Store, int) {
+	cityPath, err := resolveCity()
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", cmdName, err) //nolint:errcheck // best-effort stderr
+		return nil, 1
+	}
+	readDoltPort(cityPath)
+	cfg, _, err := config.LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"))
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", cmdName, err) //nolint:errcheck // best-effort stderr
+		return nil, 1
+	}
+	store, err := openStoreAtForCity(convoyStoreDir(cfg, cityPath, convoyID), cityPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", cmdName, err)                   //nolint:errcheck // best-effort stderr
+		fmt.Fprintln(stderr, "hint: run \"gc doctor\" for diagnostics") //nolint:errcheck // best-effort stderr
+		return nil, 1
+	}
+	return store, 0
+}
+
 // doConvoyList lists open convoys with progress counts.
 func doConvoyList(store beads.Store, stdout, stderr io.Writer) int {
 	all, err := store.List()
@@ -299,7 +332,11 @@ table of all child issues with their status and assignee.`,
 
 // cmdConvoyStatus is the CLI entry point for convoy status.
 func cmdConvoyStatus(args []string, stdout, stderr io.Writer) int {
-	store, code := openCityStore(stderr, "gc convoy status")
+	convoyID := ""
+	if len(args) > 0 {
+		convoyID = args[0]
+	}
+	store, code := openConvoyStoreByID(convoyID, stderr, "gc convoy status")
 	if store == nil {
 		return code
 	}
@@ -394,7 +431,11 @@ feature-branch formulas such as mol-polecat-work.`,
 }
 
 func cmdConvoyTarget(args []string, stdout, stderr io.Writer) int {
-	store, code := openCityStore(stderr, "gc convoy target")
+	convoyID := ""
+	if len(args) > 0 {
+		convoyID = args[0]
+	}
+	store, code := openConvoyStoreByID(convoyID, stderr, "gc convoy target")
 	if store == nil {
 		return code
 	}
@@ -451,7 +492,11 @@ convoy's progress tracking.`,
 
 // cmdConvoyAdd is the CLI entry point for adding an issue to a convoy.
 func cmdConvoyAdd(args []string, stdout, stderr io.Writer) int {
-	store, code := openCityStore(stderr, "gc convoy add")
+	convoyID := ""
+	if len(args) > 0 {
+		convoyID = args[0]
+	}
+	store, code := openConvoyStoreByID(convoyID, stderr, "gc convoy add")
 	if store == nil {
 		return code
 	}
@@ -511,7 +556,11 @@ Marks the convoy as closed regardless of child issue status. Use
 
 // cmdConvoyClose is the CLI entry point for closing a convoy.
 func cmdConvoyClose(args []string, stdout, stderr io.Writer) int {
-	store, code := openCityStore(stderr, "gc convoy close")
+	convoyID := ""
+	if len(args) > 0 {
+		convoyID = args[0]
+	}
+	store, code := openConvoyStoreByID(convoyID, stderr, "gc convoy close")
 	if store == nil {
 		return code
 	}
@@ -753,7 +802,11 @@ type landOpts struct {
 
 // cmdConvoyLand is the CLI entry point for landing a convoy.
 func cmdConvoyLand(args []string, opts landOpts, stdout, stderr io.Writer) int {
-	store, code := openCityStore(stderr, "gc convoy land")
+	convoyID := ""
+	if len(args) > 0 {
+		convoyID = args[0]
+	}
+	store, code := openConvoyStoreByID(convoyID, stderr, "gc convoy land")
 	if store == nil {
 		return code
 	}
