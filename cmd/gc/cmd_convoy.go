@@ -95,13 +95,6 @@ the new convoy. Issues can also be added later with "gc convoy add".`,
 	return cmd
 }
 
-// cmdConvoyCreateWithFields is the CLI entry point for creating a convoy with optional fields.
-// The convoy is created in the store determined by the first child bead's prefix.
-// If no children are provided, it's created in the city root store.
-func cmdConvoyCreateWithFields(args []string, fields ConvoyFields, stdout, stderr io.Writer) int {
-	return cmdConvoyCreateWithOptions(args, convoyCreateOptions{Fields: fields}, stdout, stderr)
-}
-
 func cmdConvoyCreateWithOptions(args []string, opts convoyCreateOptions, stdout, stderr io.Writer) int {
 	cityPath, err := resolveCity()
 	if err != nil {
@@ -137,15 +130,7 @@ func cmdConvoyCreateWithOptions(args []string, opts convoyCreateOptions, stdout,
 // doConvoyCreate creates a convoy bead and optionally adds issues to it.
 // When cfg/cityPath are nil/empty, all beads are assumed to be in the same store.
 func doConvoyCreate(store beads.Store, rec events.Recorder, args []string, stdout, stderr io.Writer) int {
-	return doConvoyCreateWith(store, nil, "", rec, args, ConvoyFields{}, stdout, stderr)
-}
-
-// doConvoyCreateWith creates a convoy bead with optional metadata fields.
-// The convoy bead is created in the city root store. Child beads may live
-// in different rig stores — each child is resolved to its rig store by
-// bead prefix.
-func doConvoyCreateWith(store beads.Store, cfg *config.City, cityPath string, rec events.Recorder, args []string, fields ConvoyFields, stdout, stderr io.Writer) int {
-	return doConvoyCreateWithOptions(store, cfg, cityPath, rec, args, convoyCreateOptions{Fields: fields}, stdout, stderr)
+	return doConvoyCreateWithOptions(store, nil, "", rec, args, convoyCreateOptions{}, stdout, stderr)
 }
 
 func doConvoyCreateWithOptions(store beads.Store, cfg *config.City, cityPath string, rec events.Recorder, args []string, opts convoyCreateOptions, stdout, stderr io.Writer) int {
@@ -245,7 +230,11 @@ func convoyStoreCandidates(cfg *config.City, cityPath, beadID string) []string {
 	if rawBeadsProvider(cityPath) == "file" {
 		return []string{cityPath}
 	}
-	candidates := make([]string, 0, len(cfg.Rigs)+2)
+	capacity := 2
+	if cfg != nil {
+		capacity += len(cfg.Rigs)
+	}
+	candidates := make([]string, 0, capacity)
 	add := func(dir string) {
 		if dir == "" {
 			return

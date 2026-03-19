@@ -103,8 +103,8 @@ func TestConvoyCreateMultiRig(t *testing.T) {
 
 	// Test 1: single-store mode (cfg=nil) — all beads in same store.
 	var stdout, stderr bytes.Buffer
-	code := doConvoyCreateWith(cityStore, nil, "", events.Discard,
-		[]string{"cross-rig batch", child1.ID, child2.ID}, ConvoyFields{}, &stdout, &stderr)
+	code := doConvoyCreateWithOptions(cityStore, nil, "", events.Discard,
+		[]string{"cross-rig batch", child1.ID, child2.ID}, convoyCreateOptions{}, &stdout, &stderr)
 	// Should fail because children are in rigStore, not cityStore.
 	if code != 1 {
 		t.Fatalf("expected failure (children not in city store), got code %d", code)
@@ -115,8 +115,8 @@ func TestConvoyCreateMultiRig(t *testing.T) {
 	stderr.Reset()
 	child3, _ := cityStore.Create(beads.Bead{Title: "city task"})
 	child4, _ := cityStore.Create(beads.Bead{Title: "city task 2"})
-	code = doConvoyCreateWith(cityStore, nil, "", events.Discard,
-		[]string{"same-store batch", child3.ID, child4.ID}, ConvoyFields{}, &stdout, &stderr)
+	code = doConvoyCreateWithOptions(cityStore, nil, "", events.Discard,
+		[]string{"same-store batch", child3.ID, child4.ID}, convoyCreateOptions{}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("same-store convoy failed: %s", stderr.String())
 	}
@@ -153,8 +153,8 @@ func TestConvoyCreateRigChildrenShareStore(t *testing.T) {
 	c3, _ := store.Create(beads.Bead{Title: "Haskell hello"})
 
 	var stdout, stderr bytes.Buffer
-	code := doConvoyCreateWith(store, nil, "", events.Discard,
-		[]string{"Hello World Variants", c1.ID, c2.ID, c3.ID}, ConvoyFields{}, &stdout, &stderr)
+	code := doConvoyCreateWithOptions(store, nil, "", events.Discard,
+		[]string{"Hello World Variants", c1.ID, c2.ID, c3.ID}, convoyCreateOptions{}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("convoy create failed: %s", stderr.String())
 	}
@@ -1116,9 +1116,9 @@ func TestConvoyCreateWithFields(t *testing.T) {
 	fields := ConvoyFields{Owner: "mayor", Merge: "mr"}
 
 	var stdout, stderr bytes.Buffer
-	code := doConvoyCreateWith(store, nil, "", events.Discard, []string{"deploy"}, fields, &stdout, &stderr)
+	code := doConvoyCreateWithOptions(store, nil, "", events.Discard, []string{"deploy"}, convoyCreateOptions{Fields: fields}, &stdout, &stderr)
 	if code != 0 {
-		t.Fatalf("doConvoyCreateWith = %d, want 0; stderr: %s", code, stderr.String())
+		t.Fatalf("doConvoyCreateWithOptions = %d, want 0; stderr: %s", code, stderr.String())
 	}
 
 	b, err := store.Get("gc-1")
