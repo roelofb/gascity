@@ -38,7 +38,7 @@ func (c *City) WriteReportScript(name string, drain bool) string {
 	reportFile := filepath.Join(reportDir, name+".env")
 	var drainLine string
 	if drain {
-		drainLine = fmt.Sprintf("\n# Find gc in PATH\ngc runtime drain-ack 2>/dev/null || true")
+		drainLine = "\n# Find gc in PATH\ngc runtime drain-ack 2>/dev/null || true"
 	}
 
 	script := fmt.Sprintf(`#!/bin/sh
