@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/events"
+	"github.com/gastownhall/gascity/internal/workspacesvc"
 )
 
 // fakeCityResolver implements CityResolver for testing.
@@ -261,6 +262,206 @@ func TestSupervisorBarePathSingleCity(t *testing.T) {
 	}
 }
 
+func TestSupervisorBareServicePathSingleCity(t *testing.T) {
+	state := newFakeState(t)
+	state.cityName = "sole-city"
+	state.services = &fakeServiceRegistry{
+		items: []workspacesvc.Status{{
+			ServiceName: "github-webhook",
+			PublishMode: "private",
+		}},
+		serve: func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path != "/svc/github-webhook/v0/github/webhook" {
+				t.Fatalf("path = %q, want /svc/github-webhook/v0/github/webhook", r.URL.Path)
+			}
+			if r.Header.Get("X-GC-Request") != "1" {
+				t.Fatalf("X-GC-Request = %q, want 1", r.Header.Get("X-GC-Request"))
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("proxied"))
+			return true
+		},
+	}
+
+	sm := newTestSupervisorMux(t, map[string]*fakeState{
+		"sole-city": state,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/svc/github-webhook/v0/github/webhook", strings.NewReader(`{}`))
+	req.RemoteAddr = "127.0.0.1:9000"
+	req.Header.Set("X-GC-Request", "1")
+	rec := httptest.NewRecorder()
+	sm.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "proxied" {
+		t.Fatalf("body = %q, want proxied", rec.Body.String())
+	}
+}
+
+func TestSupervisorCityScopedServicePath(t *testing.T) {
+	state := newFakeState(t)
+	state.cityName = "bright-lights"
+	state.services = &fakeServiceRegistry{
+		items: []workspacesvc.Status{{
+			ServiceName: "github-webhook",
+			PublishMode: "private",
+		}},
+		serve: func(w http.ResponseWriter, r *http.Request) bool {
+			if r.URL.Path != "/svc/github-webhook/v0/github/webhook" {
+				t.Fatalf("path = %q, want /svc/github-webhook/v0/github/webhook", r.URL.Path)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("proxied"))
+			return true
+		},
+	}
+
+	sm := newTestSupervisorMux(t, map[string]*fakeState{
+		"bright-lights": state,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v0/city/bright-lights/svc/github-webhook/v0/github/webhook", strings.NewReader(`{}`))
+	req.RemoteAddr = "127.0.0.1:9000"
+	req.Header.Set("X-GC-Request", "1")
+	rec := httptest.NewRecorder()
+	sm.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "proxied" {
+		t.Fatalf("body = %q, want proxied", rec.Body.String())
+	}
+}
+
+func TestSupervisorHandlerAllowsDirectServiceMutationWithoutCSRF(t *testing.T) {
+	state := newFakeState(t)
+	state.cityName = "sole-city"
+	state.services = &fakeServiceRegistry{
+		items: []workspacesvc.Status{{
+			ServiceName: "github-webhook",
+			PublishMode: "direct",
+		}},
+		serve: func(w http.ResponseWriter, _ *http.Request) bool {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("proxied"))
+			return true
+		},
+	}
+
+	sm := newTestSupervisorMux(t, map[string]*fakeState{
+		"sole-city": state,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/svc/github-webhook/v0/github/webhook", strings.NewReader(`{}`))
+	req.RemoteAddr = "198.51.100.10:9000"
+	rec := httptest.NewRecorder()
+	sm.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "proxied" {
+		t.Fatalf("body = %q, want proxied", rec.Body.String())
+	}
+}
+
+func TestSupervisorHandlerAllowsCityScopedDirectServiceMutationWithoutCSRF(t *testing.T) {
+	state := newFakeState(t)
+	state.cityName = "bright-lights"
+	state.services = &fakeServiceRegistry{
+		items: []workspacesvc.Status{{
+			ServiceName: "github-webhook",
+			PublishMode: "direct",
+		}},
+		serve: func(w http.ResponseWriter, _ *http.Request) bool {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("proxied"))
+			return true
+		},
+	}
+
+	sm := newTestSupervisorMux(t, map[string]*fakeState{
+		"bright-lights": state,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v0/city/bright-lights/svc/github-webhook/v0/github/webhook", strings.NewReader(`{}`))
+	req.RemoteAddr = "198.51.100.10:9000"
+	rec := httptest.NewRecorder()
+	sm.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "proxied" {
+		t.Fatalf("body = %q, want proxied", rec.Body.String())
+	}
+}
+
+func TestSupervisorHandlerReadOnlyAllowsDirectServiceMutationWithoutCSRF(t *testing.T) {
+	state := newFakeState(t)
+	state.cityName = "sole-city"
+	state.services = &fakeServiceRegistry{
+		items: []workspacesvc.Status{{
+			ServiceName: "github-webhook",
+			PublishMode: "direct",
+		}},
+		serve: func(w http.ResponseWriter, _ *http.Request) bool {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("proxied"))
+			return true
+		},
+	}
+
+	sm := NewSupervisorMux(&fakeCityResolver{cities: map[string]*fakeState{
+		"sole-city": state,
+	}}, true, "test", time.Now())
+
+	req := httptest.NewRequest(http.MethodPost, "/svc/github-webhook/v0/github/webhook", strings.NewReader(`{}`))
+	req.RemoteAddr = "198.51.100.10:9000"
+	rec := httptest.NewRecorder()
+	sm.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "proxied" {
+		t.Fatalf("body = %q, want proxied", rec.Body.String())
+	}
+}
+
+func TestSupervisorHandlerReadOnlyStillBlocksPrivateServiceMutation(t *testing.T) {
+	state := newFakeState(t)
+	state.cityName = "sole-city"
+	state.services = &fakeServiceRegistry{
+		items: []workspacesvc.Status{{
+			ServiceName: "github-webhook",
+			PublishMode: "private",
+		}},
+		serve: func(http.ResponseWriter, *http.Request) bool {
+			t.Fatal("private service mutation should not be invoked through read-only supervisor")
+			return false
+		},
+	}
+
+	sm := NewSupervisorMux(&fakeCityResolver{cities: map[string]*fakeState{
+		"sole-city": state,
+	}}, true, "test", time.Now())
+
+	req := httptest.NewRequest(http.MethodPost, "/svc/github-webhook/v0/github/webhook", strings.NewReader(`{}`))
+	req.RemoteAddr = "127.0.0.1:9000"
+	req.Header.Set("X-GC-Request", "1")
+	rec := httptest.NewRecorder()
+	sm.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
 func TestSupervisorBarePathNoCities(t *testing.T) {
 	sm := newTestSupervisorMux(t, map[string]*fakeState{})
 
@@ -296,6 +497,31 @@ func TestSupervisorBarePathMultipleCities(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "city_required") {
 		t.Errorf("body = %q, want city_required error", body)
+	}
+}
+
+func TestSupervisorBareServicePathMultipleCities(t *testing.T) {
+	s1 := newFakeState(t)
+	s1.cityName = "alpha"
+	s2 := newFakeState(t)
+	s2.cityName = "beta"
+
+	sm := newTestSupervisorMux(t, map[string]*fakeState{
+		"alpha": s1,
+		"beta":  s2,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/svc/github-webhook/v0/github/webhook", strings.NewReader(`{}`))
+	req.RemoteAddr = "127.0.0.1:9000"
+	req.Header.Set("X-GC-Request", "1")
+	rec := httptest.NewRecorder()
+	sm.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "city_required") {
+		t.Fatalf("body = %q, want city_required error", rec.Body.String())
 	}
 }
 

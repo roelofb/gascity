@@ -42,8 +42,10 @@ type cachedCityServer struct {
 //   - GET /v0/cities — list managed cities
 //   - GET /v0/city/{name} — city detail (status)
 //   - /v0/city/{name}/... — route to a specific city's API
+//   - /v0/city/{name}/svc/... — route to a specific city's service mount
 //   - GET /health — supervisor health
 //   - /v0/... (bare) — backward compat, routes to first running city
+//   - /svc/... (bare) — route to the sole running city's service mount
 type SupervisorMux struct {
 	resolver  CityResolver
 	readOnly  bool
@@ -73,11 +75,21 @@ func NewSupervisorMux(resolver CityResolver, readOnly bool, version string, star
 
 // Handler returns an http.Handler with the standard middleware chain applied.
 func (sm *SupervisorMux) Handler() http.Handler {
-	inner := withCSRFCheck(http.HandlerFunc(sm.ServeHTTP))
+	apiInner := withCSRFCheck(http.HandlerFunc(sm.ServeHTTP))
 	if sm.readOnly {
-		inner = withReadOnly(inner)
+		apiInner = withReadOnly(apiInner)
 	}
-	return withLogging(withRecovery(withCORS(inner)))
+	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if supervisorServicePath(r.URL.Path) {
+			// Workspace services apply their own publication and CSRF rules
+			// in the per-city server. Do not impose supervisor API policy on
+			// top of service mounts.
+			sm.ServeHTTP(w, r)
+			return
+		}
+		apiInner.ServeHTTP(w, r)
+	})
+	return withLogging(withRecovery(withCORS(root)))
 }
 
 // Serve accepts connections on lis. Blocks until stopped.
@@ -148,17 +160,22 @@ func (sm *SupervisorMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bad_request", "city name required in URL")
 			return
 		}
-		// /v0/city/{name} with no suffix → city detail (status)
-		if suffix == "" {
-			suffix = "/status"
+		targetPath := "/v0/status"
+		switch {
+		case suffix == "":
+			targetPath = "/v0/status"
+		case strings.HasPrefix(suffix, "/svc/"):
+			targetPath = suffix
+		default:
+			targetPath = "/v0" + suffix
 		}
-		sm.serveCityRequest(w, r, cityName, "/v0"+suffix)
+		sm.serveCityRequest(w, r, cityName, targetPath)
 		return
 	}
 
-	// Bare /v0/... — backward compat, route to sole running city.
-	// When multiple cities are running, require explicit city scope.
-	if strings.HasPrefix(path, "/v0/") || path == "/v0" {
+	// Bare /v0/... and /svc/... — backward compat, route to the sole running
+	// city. When multiple cities are running, require explicit city scope.
+	if strings.HasPrefix(path, "/v0/") || path == "/v0" || strings.HasPrefix(path, "/svc/") {
 		cities := sm.resolver.ListCities()
 		var running []CityInfo
 		for _, c := range cities {
@@ -213,15 +230,31 @@ func (sm *SupervisorMux) getCityServer(name string, state State) *Server {
 	}
 	sm.cacheMu.RUnlock()
 
-	// Cache miss or stale — create new Server via New() to stay in sync
-	// with any future initialization added to the constructor.
 	srv := New(state)
+	if sm.readOnly {
+		srv = NewReadOnly(state)
+	}
 
 	sm.cacheMu.Lock()
 	sm.cache[name] = cachedCityServer{state: state, srv: srv}
 	sm.cacheMu.Unlock()
 
 	return srv
+}
+
+func supervisorServicePath(path string) bool {
+	if strings.HasPrefix(path, "/svc/") {
+		return true
+	}
+	if !strings.HasPrefix(path, "/v0/city/") {
+		return false
+	}
+	rest := strings.TrimPrefix(path, "/v0/city/")
+	idx := strings.IndexByte(rest, '/')
+	if idx < 0 {
+		return false
+	}
+	return strings.HasPrefix(rest[idx:], "/svc/")
 }
 
 func (sm *SupervisorMux) handleCities(w http.ResponseWriter, _ *http.Request) {
