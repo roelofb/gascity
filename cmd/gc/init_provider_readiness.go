@@ -200,7 +200,7 @@ func collectInitProviderTargets(cfg *config.City) ([]initProviderTarget, []strin
 	seenTargets := make(map[string]struct{}, len(providerRefs))
 	seenWarnings := make(map[string]struct{}, len(providerRefs))
 	for _, ref := range providerRefs {
-		if _, err := config.ResolveProvider(&config.Agent{Provider: ref}, &cfg.Workspace, cfg.Providers, exec.LookPath); err != nil {
+		if _, err := config.ResolveProvider(&config.Agent{Provider: ref}, &cfg.Workspace, cfg.Providers, initLookPath); err != nil {
 			return nil, nil, fmt.Errorf("provider %q: %w", ref, err)
 		}
 

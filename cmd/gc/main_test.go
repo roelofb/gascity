@@ -59,6 +59,7 @@ func configureSupervisorHooksForTests() {
 	reloadSupervisorHook = func(_, _ io.Writer) int { return 0 }
 	supervisorAliveHook = func() int { return 0 }
 	startNudgePoller = func(string, string, string) error { return nil }
+	initLookPath = func(file string) (string, error) { return file, nil }
 	initProbeProvidersReadiness = func(_ context.Context, providers []string, _ bool) (map[string]api.ReadinessItem, error) {
 		out := make(map[string]api.ReadinessItem, len(providers))
 		for _, provider := range providers {
