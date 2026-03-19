@@ -247,7 +247,12 @@ func TestConvoyListExcludesClosed(t *testing.T) {
 
 func TestConvoyStatus(t *testing.T) {
 	store := beads.NewMemStore()
-	_, _ = store.Create(beads.Bead{Title: "deploy", Type: "convoy"})                       // gc-1
+	_, _ = store.Create(beads.Bead{
+		Title:    "deploy",
+		Type:     "convoy",
+		Labels:   []string{"owned"},
+		Metadata: map[string]string{"target": "integration/gc-1"},
+	}) // gc-1
 	_, _ = store.Create(beads.Bead{Title: "task A", ParentID: "gc-1"})                     // gc-2
 	_, _ = store.Create(beads.Bead{Title: "task B", ParentID: "gc-1", Assignee: "worker"}) // gc-3
 	_ = store.Close("gc-2")
@@ -264,12 +269,36 @@ func TestConvoyStatus(t *testing.T) {
 		"Title:    deploy",
 		"Status:   open",
 		"1/2 closed",
+		"Lifecycle: owned",
+		"Target:   integration/gc-1",
 		"task A", "closed",
 		"task B", "worker",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestConvoyTarget(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "deploy", Type: "convoy"}) // gc-1
+
+	var stdout, stderr bytes.Buffer
+	code := doConvoyTarget(store, []string{"gc-1", "integration/gc-1"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doConvoyTarget = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Set target of convoy gc-1 to integration/gc-1") {
+		t.Errorf("stdout = %q, want target confirmation", stdout.String())
+	}
+
+	b, err := store.Get("gc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Metadata["target"]; got != "integration/gc-1" {
+		t.Fatalf("target metadata = %q, want %q", got, "integration/gc-1")
 	}
 }
 
@@ -877,6 +906,7 @@ func TestConvoyFieldsRoundTrip(t *testing.T) {
 		Notify:   "mayor",
 		Molecule: "mol-1",
 		Merge:    "mr",
+		Target:   "integration/gc-1",
 	}
 
 	if err := setConvoyFields(store, "gc-1", fields); err != nil {
@@ -957,6 +987,31 @@ func TestConvoyCreateWithFields(t *testing.T) {
 	}
 	if got.Merge != "mr" {
 		t.Errorf("Merge = %q, want %q", got.Merge, "mr")
+	}
+}
+
+func TestConvoyCreateWithOptionsOwnedAndTarget(t *testing.T) {
+	store := beads.NewMemStore()
+	opts := convoyCreateOptions{
+		Fields: ConvoyFields{Target: "integration/gc-1"},
+		Owned:  true,
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doConvoyCreateWithOptions(store, nil, "", events.Discard, []string{"deploy"}, opts, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doConvoyCreateWithOptions = %d, want 0; stderr: %s", code, stderr.String())
+	}
+
+	b, err := store.Get("gc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasLabel(b.Labels, "owned") {
+		t.Fatalf("labels = %v, want owned label", b.Labels)
+	}
+	if got := b.Metadata["target"]; got != "integration/gc-1" {
+		t.Fatalf("target metadata = %q, want %q", got, "integration/gc-1")
 	}
 }
 

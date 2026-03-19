@@ -11,6 +11,7 @@ type ConvoyFields struct {
 	Notify   string // notification target on completion
 	Molecule string // associated molecule ID
 	Merge    string // merge strategy: "direct", "mr", "local"
+	Target   string // target branch inherited by child work beads
 }
 
 // convoyFieldKeys maps ConvoyFields struct fields to their metadata key names.
@@ -23,6 +24,7 @@ var convoyFieldKeys = [...]struct {
 	{"convoy.notify", func(f *ConvoyFields) string { return f.Notify }, func(f *ConvoyFields, v string) { f.Notify = v }},
 	{"convoy.molecule", func(f *ConvoyFields) string { return f.Molecule }, func(f *ConvoyFields, v string) { f.Molecule = v }},
 	{"convoy.merge", func(f *ConvoyFields) string { return f.Merge }, func(f *ConvoyFields, v string) { f.Merge = v }},
+	{"target", func(f *ConvoyFields) string { return f.Target }, func(f *ConvoyFields, v string) { f.Target = v }},
 }
 
 // applyConvoyFields populates a Bead's Metadata map with non-empty ConvoyFields.

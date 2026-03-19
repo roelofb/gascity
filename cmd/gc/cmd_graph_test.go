@@ -96,7 +96,7 @@ func TestGraphConvoyExpansion(t *testing.T) {
 	}
 }
 
-func TestGraphEpicExpansion(t *testing.T) {
+func TestGraphEpicIsTreatedAsOrdinaryBead(t *testing.T) {
 	store := beads.NewMemStore()
 	_, _ = store.Create(beads.Bead{Title: "my epic", Type: "epic"})     // gc-1
 	_, _ = store.Create(beads.Bead{Title: "story 1", ParentID: "gc-1"}) // gc-2
@@ -109,8 +109,11 @@ func TestGraphEpicExpansion(t *testing.T) {
 	}
 	out := stdout.String()
 
-	if !strings.Contains(out, "story 1") || !strings.Contains(out, "story 2") {
-		t.Errorf("should show epic children:\n%s", out)
+	if !strings.Contains(out, "my epic") {
+		t.Errorf("should show epic bead itself:\n%s", out)
+	}
+	if strings.Contains(out, "story 1") || strings.Contains(out, "story 2") {
+		t.Errorf("epic children should not be expanded:\n%s", out)
 	}
 }
 

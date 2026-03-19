@@ -8,7 +8,7 @@ func TestIsContainerType(t *testing.T) {
 		want bool
 	}{
 		{"convoy", true},
-		{"epic", true},
+		{"epic", false},
 		{"task", false},
 		{"message", false},
 		{"", false},

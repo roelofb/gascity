@@ -27,7 +27,7 @@ description = "The work bead ID assigned to this polecat"
 required = true
 
 [vars.base_branch]
-description = "The base branch to rebase on and compare against (e.g., main, integration/epic-id)"
+description = "The base branch to rebase on and compare against (e.g., main, integration/convoy-id)"
 default = "main"
 
 [vars.setup_command]

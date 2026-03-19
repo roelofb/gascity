@@ -105,7 +105,10 @@ These require the gastown pack. They extend the built-in
 
 **mol-polecat-work** — Feature-branch variant. Creates a worktree and
 feature branch, implements, then pushes and reassigns to the refinery
-for merge review. Production default for multi-agent setups.
+for merge review. Production default for multi-agent setups. The polecat's
+`base_branch` comes from `metadata.target` on the work bead if present,
+otherwise from a parent convoy with `metadata.target`, otherwise from
+the rig repo's default branch.
 
 ```
 gc sling <agent> <bead-id> --on mol-polecat-work
@@ -138,14 +141,16 @@ don't sling these manually:
 ## Convoys (grouped work)
 
 ```
-gc convoy create <name> <bead-ids...>  # Group beads into a convoy
-gc convoy list                         # List active convoys
-gc convoy status <id>                  # Show convoy progress
-gc convoy add <id> <bead-ids...>       # Add beads to convoy
-gc convoy close <id>                   # Close convoy
-gc convoy check <id>                   # Check if all beads done
-gc convoy stranded                     # Find convoys with no progress
-gc convoy autoclose                    # Close convoys where all beads done
+gc convoy create <name> <bead-ids...>                 # Group beads into a convoy
+gc convoy create <name> --owned --target integration/<slug>  # Long-lived initiative convoy
+gc convoy target <id> <branch>                        # Set/update convoy target branch
+gc convoy list                                        # List active convoys
+gc convoy status <id>                                 # Show convoy progress + metadata
+gc convoy add <id> <bead-ids...>                      # Add beads to convoy
+gc convoy close <id>                                  # Close convoy
+gc convoy check <id>                                  # Check if all beads done
+gc convoy stranded                                    # Find convoys with no progress
+gc convoy autoclose                                   # Close convoys where all beads done
 ```
 
 ## Orders

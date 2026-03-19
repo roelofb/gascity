@@ -974,7 +974,7 @@ func TestDoSlingBatchConvoyNoOpenChildren(t *testing.T) {
 	}
 }
 
-func TestDoSlingBatchEpicExpands(t *testing.T) {
+func TestDoSlingBatchEpicErrors(t *testing.T) {
 	runner := newFakeRunner()
 	sp := runtime.NewFake()
 	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
@@ -991,14 +991,17 @@ func TestDoSlingBatchEpicExpands(t *testing.T) {
 	opts := testOpts(a, "EP-1")
 	code := doSlingBatch(opts, deps, q)
 
-	if code != 0 {
-		t.Fatalf("doSlingBatch returned %d, want 0; stderr: %s", code, stderr.String())
+	if code != 1 {
+		t.Fatalf("doSlingBatch returned %d, want 1; stderr: %s", code, stderr.String())
 	}
-	if len(runner.calls) != 2 {
-		t.Fatalf("got %d runner calls, want 2: %v", len(runner.calls), runner.calls)
+	if len(runner.calls) != 0 {
+		t.Fatalf("got %d runner calls, want 0: %v", len(runner.calls), runner.calls)
 	}
-	if !strings.Contains(stdout.String(), "Expanding epic EP-1") {
-		t.Errorf("stdout = %q, want epic expansion header", stdout.String())
+	if stdout.String() != "" {
+		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "first-class support is for convoys only") {
+		t.Errorf("stderr = %q, want convoy-only error", stderr.String())
 	}
 }
 
@@ -3141,7 +3144,7 @@ func TestBuildSlingFormulaVarsUsesBeadTargetForPolecatFormula(t *testing.T) {
 		beadsByID: map[string]beads.Bead{
 			"HW-42": {
 				ID:       "HW-42",
-				Metadata: map[string]string{"target": "integration/epic-7"},
+				Metadata: map[string]string{"target": "integration/convoy-7"},
 			},
 		},
 	}
@@ -3153,8 +3156,34 @@ func TestBuildSlingFormulaVarsUsesBeadTargetForPolecatFormula(t *testing.T) {
 	if got, ok := findVarValue(vars, "issue"); !ok || got != "HW-42" {
 		t.Fatalf("issue var = %q, %v; want HW-42, true", got, ok)
 	}
-	if got, ok := findVarValue(vars, "base_branch"); !ok || got != "integration/epic-7" {
-		t.Fatalf("base_branch var = %q, %v; want integration/epic-7, true", got, ok)
+	if got, ok := findVarValue(vars, "base_branch"); !ok || got != "integration/convoy-7" {
+		t.Fatalf("base_branch var = %q, %v; want integration/convoy-7, true", got, ok)
+	}
+}
+
+func TestBuildSlingFormulaVarsUsesAncestorTargetForPolecatFormula(t *testing.T) {
+	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
+	store := &recordingStore{
+		Store: beads.NewMemStore(),
+		beadsByID: map[string]beads.Bead{
+			"HW-42": {
+				ID:       "HW-42",
+				ParentID: "CVY-7",
+			},
+			"CVY-7": {
+				ID:       "CVY-7",
+				Type:     "convoy",
+				Metadata: map[string]string{"target": "integration/convoy-7"},
+			},
+		},
+	}
+	deps, _, _ := testDeps(cfg, runtime.NewFake(), newFakeRunner().run)
+	deps.Store = store
+
+	vars := buildSlingFormulaVars("mol-polecat-work", "HW-42", nil, config.Agent{Name: "polecat", Dir: "hw"}, deps)
+
+	if got, ok := findVarValue(vars, "base_branch"); !ok || got != "integration/convoy-7" {
+		t.Fatalf("base_branch var = %q, %v; want integration/convoy-7, true", got, ok)
 	}
 }
 
@@ -3183,7 +3212,7 @@ func TestBuildSlingFormulaVarsPreservesExplicitValues(t *testing.T) {
 		beadsByID: map[string]beads.Bead{
 			"HW-42": {
 				ID:       "HW-42",
-				Metadata: map[string]string{"target": "integration/epic-7"},
+				Metadata: map[string]string{"target": "integration/convoy-7"},
 			},
 		},
 	}
@@ -3198,6 +3227,20 @@ func TestBuildSlingFormulaVarsPreservesExplicitValues(t *testing.T) {
 	}
 	if got, ok := findVarValue(vars, "base_branch"); !ok || got != "release/1.2" {
 		t.Fatalf("base_branch var = %q, %v; want release/1.2, true", got, ok)
+	}
+}
+
+func TestBeadMetadataTargetStopsOnParentCycle(t *testing.T) {
+	store := &recordingStore{
+		Store: beads.NewMemStore(),
+		beadsByID: map[string]beads.Bead{
+			"A": {ID: "A", ParentID: "B"},
+			"B": {ID: "B", ParentID: "A"},
+		},
+	}
+
+	if got := beadMetadataTarget(store, "A"); got != "" {
+		t.Fatalf("beadMetadataTarget = %q, want empty string", got)
 	}
 }
 
@@ -3239,7 +3282,7 @@ func TestDoSlingExplicitOnInjectsIssueAndBaseBranch(t *testing.T) {
 		beadsByID: map[string]beads.Bead{
 			"HW-42": {
 				ID:       "HW-42",
-				Metadata: map[string]string{"target": "integration/epic-7"},
+				Metadata: map[string]string{"target": "integration/convoy-7"},
 			},
 		},
 	}
@@ -3257,8 +3300,8 @@ func TestDoSlingExplicitOnInjectsIssueAndBaseBranch(t *testing.T) {
 	if got, ok := findVarValue(store.onCalls[0].vars, "issue"); !ok || got != "HW-42" {
 		t.Fatalf("issue var = %q, %v; want HW-42, true", got, ok)
 	}
-	if got, ok := findVarValue(store.onCalls[0].vars, "base_branch"); !ok || got != "integration/epic-7" {
-		t.Fatalf("base_branch var = %q, %v; want integration/epic-7, true", got, ok)
+	if got, ok := findVarValue(store.onCalls[0].vars, "base_branch"); !ok || got != "integration/convoy-7" {
+		t.Fatalf("base_branch var = %q, %v; want integration/convoy-7, true", got, ok)
 	}
 }
 

@@ -43,7 +43,6 @@ type UpdateOpts struct {
 // batch expansion during dispatch.
 var containerTypes = map[string]bool{
 	"convoy": true,
-	"epic":   true,
 }
 
 // IsContainerType reports whether the bead type groups child beads

@@ -29,7 +29,7 @@ type BeadQuerier interface {
 }
 
 // BeadChildQuerier extends BeadQuerier with the ability to list children
-// of a container bead (convoy, epic).
+// of a convoy.
 type BeadChildQuerier interface {
 	BeadQuerier
 	Children(parentID string) ([]beads.Bead, error)
@@ -545,9 +545,9 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier) int {
 	return 0
 }
 
-// doSlingBatch handles container bead expansion before delegating to doSling.
-// If the argument is a container bead (convoy, epic), it expands open children
-// and routes each individually. Otherwise it falls through to doSling.
+// doSlingBatch handles convoy expansion before delegating to doSling.
+// If the argument is a convoy, it expands open children and routes each
+// individually. Otherwise it falls through to doSling.
 func doSlingBatch(opts slingOpts, deps slingDeps, querier BeadChildQuerier) int {
 	a := opts.Target
 	// Formula mode, nil querier → delegate directly.
@@ -562,6 +562,10 @@ func doSlingBatch(opts slingOpts, deps slingDeps, querier BeadChildQuerier) int 
 		singleOpts := opts
 		singleOpts.IsFormula = false
 		return doSling(singleOpts, deps, querier)
+	}
+	if b.Type == "epic" {
+		fmt.Fprintf(deps.Stderr, "gc sling: bead %s is an epic; first-class support is for convoys only\n", b.ID) //nolint:errcheck // best-effort
+		return 1
 	}
 
 	if !beads.IsContainerType(b.Type) {
@@ -757,11 +761,24 @@ func beadMetadataTarget(store beads.Store, beadID string) string {
 	if store == nil || beadID == "" {
 		return ""
 	}
-	b, err := store.Get(beadID)
-	if err != nil {
-		return ""
+
+	seen := make(map[string]struct{}, 8)
+	for beadID != "" {
+		if _, ok := seen[beadID]; ok {
+			return ""
+		}
+		seen[beadID] = struct{}{}
+
+		b, err := store.Get(beadID)
+		if err != nil {
+			return ""
+		}
+		if target := strings.TrimSpace(b.Metadata["target"]); target != "" {
+			return target
+		}
+		beadID = strings.TrimSpace(b.ParentID)
 	}
-	return strings.TrimSpace(b.Metadata["target"])
+	return ""
 }
 
 func slingFormulaRepoDir(beadID string, deps slingDeps, a config.Agent) string {
@@ -1210,7 +1227,7 @@ func dryRunSingle(opts slingOpts, deps slingDeps, querier BeadQuerier) int {
 }
 
 // dryRunBatch prints a step-by-step preview of what gc sling would do for a
-// container bead (convoy, epic) without executing any side effects.
+// convoy without executing any side effects.
 func dryRunBatch(opts slingOpts, deps slingDeps,
 	b beads.Bead, children, open []beads.Bead, querier BeadQuerier,
 ) int {

@@ -14,17 +14,17 @@ import (
 func newGraphCmd(stdout, stderr io.Writer) *cobra.Command {
 	var mermaid, tree bool
 	cmd := &cobra.Command{
-		Use:   "graph <bead-ids|convoy-id|epic-id...>",
+		Use:   "graph <bead-ids|convoy-id...>",
 		Short: "Show dependency graph for beads",
-		Long: `Show the dependency graph for a set of beads, a convoy, or an epic.
+		Long: `Show the dependency graph for a set of beads or a convoy.
 
 Resolves dependencies via the bead store and prints each bead with its
-status and what blocks it. Convoys and epics are expanded to their
-children automatically. Readiness is computed within the displayed set.
+status and what blocks it. Convoys are expanded to their children
+automatically. Readiness is computed within the displayed set.
 
 By default prints a table. Use --tree for a Unicode tree view or
 --mermaid for a Mermaid.js flowchart you can paste into Markdown.`,
-		Example: `  gc graph gc-42               # expand convoy or epic children
+		Example: `  gc graph gc-42               # expand convoy children
   gc graph gc-1 gc-2 gc-3     # arbitrary beads
   gc graph gc-42 --tree        # dependency tree
   gc graph gc-42 --mermaid     # Mermaid.js diagram`,
@@ -145,7 +145,7 @@ func doGraph(store beads.Store, args []string, opts graphOpts, stdout, stderr io
 	return 0
 }
 
-// resolveGraphInput expands container types (convoy, epic) to their children.
+// resolveGraphInput expands convoy inputs to their children.
 // Non-containers are passed through. Multiple args are resolved individually.
 // Duplicate IDs are removed. Returns the full Bead objects to avoid re-fetching.
 func resolveGraphInput(store beads.Store, args []string) ([]beads.Bead, error) {

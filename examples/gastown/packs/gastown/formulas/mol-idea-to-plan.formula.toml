@@ -426,8 +426,13 @@ Turn the final design doc into executable work.
 cat ".designs/$REVIEW_ID/design-doc.md"
 ```
 
-**2. Create a tracking epic for the initiative:**
-Use `bd create --type=epic` and reference:
+**2. Create an owned convoy for the initiative:**
+Use `gc convoy create "<initiative-name>" --owned` to create the parent
+container, then set its integration target with:
+```bash
+gc convoy target <convoy-id> integration/<convoy-id>
+```
+Record references to:
 - `.prd-reviews/$REVIEW_ID/prd-draft.md`
 - `.prd-reviews/$REVIEW_ID/prd-review.md`
 - `.designs/$REVIEW_ID/design-doc.md`
@@ -442,6 +447,11 @@ Each task bead should include:
 
 Prefer thin vertical slices over giant phases.
 
+After creating the task beads, add them to the convoy with:
+```bash
+gc convoy add <convoy-id> <task-id>
+```
+
 **4. Wire dependencies with `bd dep add`:**
 Model the actual "X needs Y" relationships. Verify with:
 ```bash
@@ -452,7 +462,7 @@ bd blocked
 `.plan-reviews/$REVIEW_ID/beads-created.md`
 
 **6. Finish by telling the human:**
-- which epic/task beads were created
+- which convoy/task beads were created
 - where the artifacts live
 - which bead should be dispatched first
 

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/gastownhall/gascity/internal/beads"
@@ -26,7 +27,7 @@ and can be auto-closed when all their issues are resolved.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				fmt.Fprintln(stderr, "gc convoy: missing subcommand (create, list, status, add, close, check, stranded, land)") //nolint:errcheck // best-effort stderr
+				fmt.Fprintln(stderr, "gc convoy: missing subcommand (create, list, status, target, add, close, check, stranded, land)") //nolint:errcheck // best-effort stderr
 			} else {
 				fmt.Fprintf(stderr, "gc convoy: unknown subcommand %q\n", args[0]) //nolint:errcheck // best-effort stderr
 			}
@@ -37,6 +38,7 @@ and can be auto-closed when all their issues are resolved.`,
 		newConvoyCreateCmd(stdout, stderr),
 		newConvoyListCmd(stdout, stderr),
 		newConvoyStatusCmd(stdout, stderr),
+		newConvoyTargetCmd(stdout, stderr),
 		newConvoyAddCmd(stdout, stderr),
 		newConvoyCloseCmd(stdout, stderr),
 		newConvoyCheckCmd(stdout, stderr),
@@ -47,8 +49,14 @@ and can be auto-closed when all their issues are resolved.`,
 	return cmd
 }
 
+type convoyCreateOptions struct {
+	Fields ConvoyFields
+	Owned  bool
+}
+
 func newConvoyCreateCmd(stdout, stderr io.Writer) *cobra.Command {
-	var owner, notify, merge string
+	var owner, notify, merge, target string
+	var owned bool
 	cmd := &cobra.Command{
 		Use:   "create <name> [issue-ids...]",
 		Short: "Create a convoy and optionally track issues",
@@ -58,11 +66,20 @@ Creates a convoy bead and sets the parent of any provided issue IDs to
 the new convoy. Issues can also be added later with "gc convoy add".`,
 		Example: `  gc convoy create sprint-42
   gc convoy create sprint-42 issue-1 issue-2 issue-3
-  gc convoy create deploy --owner mayor --notify mayor --merge mr`,
+  gc convoy create deploy --owner mayor --notify mayor --merge mr
+  gc convoy create auth-rewrite --owned --target integration/auth-rewrite`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
-			fields := ConvoyFields{Owner: owner, Notify: notify, Merge: merge}
-			if cmdConvoyCreateWithFields(args, fields, stdout, stderr) != 0 {
+			opts := convoyCreateOptions{
+				Fields: ConvoyFields{
+					Owner:  owner,
+					Notify: notify,
+					Merge:  merge,
+					Target: target,
+				},
+				Owned: owned,
+			}
+			if cmdConvoyCreateWithOptions(args, opts, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
@@ -71,6 +88,8 @@ the new convoy. Issues can also be added later with "gc convoy add".`,
 	cmd.Flags().StringVar(&owner, "owner", "", "convoy owner (who manages it)")
 	cmd.Flags().StringVar(&notify, "notify", "", "notification target on completion")
 	cmd.Flags().StringVar(&merge, "merge", "", "merge strategy: direct, mr, local")
+	cmd.Flags().StringVar(&target, "target", "", "target branch inherited by child work beads")
+	cmd.Flags().BoolVar(&owned, "owned", false, "mark convoy as owned (manual lifecycle, no auto-close)")
 	return cmd
 }
 
@@ -78,6 +97,10 @@ the new convoy. Issues can also be added later with "gc convoy add".`,
 // The convoy is created in the store determined by the first child bead's prefix.
 // If no children are provided, it's created in the city root store.
 func cmdConvoyCreateWithFields(args []string, fields ConvoyFields, stdout, stderr io.Writer) int {
+	return cmdConvoyCreateWithOptions(args, convoyCreateOptions{Fields: fields}, stdout, stderr)
+}
+
+func cmdConvoyCreateWithOptions(args []string, opts convoyCreateOptions, stdout, stderr io.Writer) int {
 	cityPath, err := resolveCity()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc convoy create: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -106,7 +129,7 @@ func cmdConvoyCreateWithFields(args []string, fields ConvoyFields, stdout, stder
 	}
 
 	rec := openCityRecorder(stderr)
-	return doConvoyCreateWith(store, cfg, cityPath, rec, args, fields, stdout, stderr)
+	return doConvoyCreateWithOptions(store, cfg, cityPath, rec, args, opts, stdout, stderr)
 }
 
 // doConvoyCreate creates a convoy bead and optionally adds issues to it.
@@ -120,6 +143,10 @@ func doConvoyCreate(store beads.Store, rec events.Recorder, args []string, stdou
 // in different rig stores — each child is resolved to its rig store by
 // bead prefix.
 func doConvoyCreateWith(store beads.Store, cfg *config.City, cityPath string, rec events.Recorder, args []string, fields ConvoyFields, stdout, stderr io.Writer) int {
+	return doConvoyCreateWithOptions(store, cfg, cityPath, rec, args, convoyCreateOptions{Fields: fields}, stdout, stderr)
+}
+
+func doConvoyCreateWithOptions(store beads.Store, cfg *config.City, cityPath string, rec events.Recorder, args []string, opts convoyCreateOptions, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "gc convoy create: missing convoy name") //nolint:errcheck // best-effort stderr
 		return 1
@@ -128,7 +155,10 @@ func doConvoyCreateWith(store beads.Store, cfg *config.City, cityPath string, re
 	issueIDs := args[1:]
 
 	b := beads.Bead{Title: name, Type: "convoy"}
-	applyConvoyFields(&b, fields)
+	if opts.Owned {
+		b.Labels = []string{"owned"}
+	}
+	applyConvoyFields(&b, opts.Fields)
 
 	convoy, err := store.Create(b)
 	if err != nil {
@@ -139,7 +169,7 @@ func doConvoyCreateWith(store beads.Store, cfg *config.City, cityPath string, re
 	// Ensure metadata is persisted on all backends. MemStore carries Metadata
 	// through Create, but BdStore/exec.Store may not. setConvoyFields uses
 	// SetMetadata which works across all backends.
-	if err := setConvoyFields(store, convoy.ID, fields); err != nil {
+	if err := setConvoyFields(store, convoy.ID, opts.Fields); err != nil {
 		fmt.Fprintf(stderr, "gc convoy create: warning: setting fields: %v\n", err) //nolint:errcheck // best-effort stderr
 		// Non-fatal: convoy already created and event will be emitted.
 	}
@@ -312,6 +342,22 @@ func doConvoyStatus(store beads.Store, args []string, stdout, stderr io.Writer) 
 	w(fmt.Sprintf("Title:    %s", convoy.Title))
 	w(fmt.Sprintf("Status:   %s", convoy.Status))
 	w(fmt.Sprintf("Progress: %d/%d closed", closed, len(children)))
+	fields := getConvoyFields(convoy)
+	if hasLabel(convoy.Labels, "owned") {
+		w("Lifecycle: owned")
+	}
+	if fields.Target != "" {
+		w(fmt.Sprintf("Target:   %s", fields.Target))
+	}
+	if fields.Owner != "" {
+		w(fmt.Sprintf("Owner:    %s", fields.Owner))
+	}
+	if fields.Notify != "" {
+		w(fmt.Sprintf("Notify:   %s", fields.Notify))
+	}
+	if fields.Merge != "" {
+		w(fmt.Sprintf("Merge:    %s", fields.Merge))
+	}
 
 	if len(children) > 0 {
 		w("")
@@ -326,6 +372,62 @@ func doConvoyStatus(store beads.Store, args []string, stdout, stderr io.Writer) 
 		}
 		tw.Flush() //nolint:errcheck // best-effort stdout
 	}
+	return 0
+}
+
+func newConvoyTargetCmd(stdout, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "target <convoy-id> <branch>",
+		Short: "Set the target branch on a convoy",
+		Long: `Set the target branch metadata on a convoy.
+
+Child work beads can inherit this target branch when slung with
+feature-branch formulas such as mol-polecat-work.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if cmdConvoyTarget(args, stdout, stderr) != 0 {
+				return errExit
+			}
+			return nil
+		},
+	}
+}
+
+func cmdConvoyTarget(args []string, stdout, stderr io.Writer) int {
+	store, code := openCityStore(stderr, "gc convoy target")
+	if store == nil {
+		return code
+	}
+	return doConvoyTarget(store, args, stdout, stderr)
+}
+
+func doConvoyTarget(store beads.Store, args []string, stdout, stderr io.Writer) int {
+	if len(args) < 2 {
+		fmt.Fprintln(stderr, "gc convoy target: missing convoy ID or branch") //nolint:errcheck // best-effort stderr
+		return 1
+	}
+	id := args[0]
+	target := strings.TrimSpace(args[1])
+	if target == "" {
+		fmt.Fprintln(stderr, "gc convoy target: target branch cannot be empty") //nolint:errcheck // best-effort stderr
+		return 1
+	}
+
+	convoy, err := store.Get(id)
+	if err != nil {
+		fmt.Fprintf(stderr, "gc convoy target: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+	if convoy.Type != "convoy" {
+		fmt.Fprintf(stderr, "gc convoy target: bead %s is not a convoy\n", id) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+	if err := setConvoyFields(store, id, ConvoyFields{Target: target}); err != nil {
+		fmt.Fprintf(stderr, "gc convoy target: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "Set target of convoy %s to %s\n", id, target) //nolint:errcheck // best-effort stdout
 	return 0
 }
 

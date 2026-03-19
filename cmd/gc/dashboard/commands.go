@@ -62,6 +62,7 @@ var AllowedCommands = map[string]CommandMeta{
 
 	// Convoy actions
 	"convoy create":  {Confirm: true, Desc: "Create convoy", Category: "Convoys", Args: "<name>", Binary: "gc"},
+	"convoy target":  {Confirm: true, Desc: "Set convoy target", Category: "Convoys", Args: "<convoy-id> <branch>", ArgType: "convoys", Binary: "gc"},
 	"convoy refresh": {Confirm: false, Desc: "Refresh convoy", Category: "Convoys", Args: "<convoy-id>", ArgType: "convoys", Binary: "gc"},
 	"convoy add":     {Confirm: true, Desc: "Add issue to convoy", Category: "Convoys", Args: "<convoy-id> <issue>", ArgType: "convoys", Binary: "gc"},
 
