@@ -293,6 +293,53 @@ func TestUpdatePackWithBranchRef(t *testing.T) {
 	}
 }
 
+func TestUpdatePackWithDirtyCache(t *testing.T) {
+	// Simulate local modifications in the cache (e.g. a pack script
+	// writing into its own directory). updatePack should discard them
+	// and check out the remote ref cleanly.
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "work")
+	bareDir := filepath.Join(dir, "test.git")
+
+	mustGit(t, "", "init", "--initial-branch=main", workDir)
+	if err := os.WriteFile(filepath.Join(workDir, "pack.toml"), []byte("clean"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, workDir, "add", "-A")
+	mustGit(t, workDir, "commit", "-m", "initial")
+	mustGit(t, workDir, "clone", "--bare", workDir, bareDir)
+
+	// Clone into cache.
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	if err := clonePack(bareDir, cacheDir, "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dirty the cache: modify a tracked file and add an untracked file.
+	if err := os.WriteFile(filepath.Join(cacheDir, "pack.toml"), []byte("dirty"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "untracked.txt"), []byte("junk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// updatePack should succeed despite dirty working tree.
+	if err := updatePack(cacheDir, "main"); err != nil {
+		t.Fatalf("updatePack with dirty cache: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(cacheDir, "pack.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "clean" {
+		t.Errorf("expected tracked file restored to %q, got %q", "clean", string(data))
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "untracked.txt")); err == nil {
+		t.Error("expected untracked file to be cleaned, but it still exists")
+	}
+}
+
 func TestFetchPacks_ClonesMissing(t *testing.T) {
 	bare := initBareRepo(t, "remote-topo")
 	cityRoot := t.TempDir()

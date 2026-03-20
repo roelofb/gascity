@@ -69,10 +69,17 @@ func clonePack(source, cacheDir, ref string) error {
 }
 
 // updatePack fetches and checks out the specified ref.
+// The cache is a read-only mirror, so any local modifications are
+// discarded before checkout to avoid "local changes would be
+// overwritten" errors.
 func updatePack(cacheDir, ref string) error {
 	if _, err := runGit(cacheDir, "fetch", "origin"); err != nil {
 		return fmt.Errorf("fetching: %w", err)
 	}
+	// Discard any local modifications in the cache working tree.
+	_, _ = runGit(cacheDir, "checkout", "--force", ".")
+	_, _ = runGit(cacheDir, "clean", "-fd")
+
 	if ref == "" {
 		if _, err := runGit(cacheDir, "checkout", "origin/HEAD"); err != nil {
 			return fmt.Errorf("checking out origin/HEAD: %w", err)
