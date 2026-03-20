@@ -1186,7 +1186,8 @@ func (a *Agent) EffectiveWorkQuery() string {
 		}
 		return "bd ready --label=pool:" + label + " --limit=1"
 	}
-	return "bd ready --assignee=$GC_SESSION_NAME"
+	return `bd ready --json --limit=0 2>/dev/null | ` +
+		`jq -c --arg a "$GC_SESSION_NAME" 'if type == "array" then map(select(.assignee == $a)) else (if .assignee == $a then [.] else [] end) end | .[:1]' 2>/dev/null`
 }
 
 // EffectiveSlingQuery returns the sling query command template for this agent.

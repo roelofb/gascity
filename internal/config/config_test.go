@@ -1155,7 +1155,7 @@ func TestPoolRoundTrip(t *testing.T) {
 func TestEffectiveWorkQueryDefault(t *testing.T) {
 	a := Agent{Name: "mayor"}
 	got := a.EffectiveWorkQuery()
-	want := "bd ready --assignee=$GC_SESSION_NAME"
+	want := `bd ready --json --limit=0 2>/dev/null | jq -c --arg a "$GC_SESSION_NAME" 'if type == "array" then map(select(.assignee == $a)) else (if .assignee == $a then [.] else [] end) end | .[:1]' 2>/dev/null`
 	if got != want {
 		t.Errorf("EffectiveWorkQuery() = %q, want %q", got, want)
 	}
@@ -1173,7 +1173,7 @@ func TestEffectiveWorkQueryCustom(t *testing.T) {
 func TestEffectiveWorkQueryWithDir(t *testing.T) {
 	a := Agent{Name: "polecat", Dir: "hello-world"}
 	got := a.EffectiveWorkQuery()
-	want := "bd ready --assignee=$GC_SESSION_NAME"
+	want := `bd ready --json --limit=0 2>/dev/null | jq -c --arg a "$GC_SESSION_NAME" 'if type == "array" then map(select(.assignee == $a)) else (if .assignee == $a then [.] else [] end) end | .[:1]' 2>/dev/null`
 	if got != want {
 		t.Errorf("EffectiveWorkQuery() = %q, want %q", got, want)
 	}

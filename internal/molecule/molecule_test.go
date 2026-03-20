@@ -105,6 +105,144 @@ func TestInstantiateWithParentID(t *testing.T) {
 	}
 }
 
+func TestInstantiateGraphWorkflowIgnoresParentIDOnRoot(t *testing.T) {
+	store := beads.NewMemStore()
+
+	parent, err := store.Create(beads.Bead{Title: "Source", Type: "task"})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+
+	recipe := &formula.Recipe{
+		Name: "graph-demo",
+		Steps: []formula.RecipeStep{
+			{
+				ID:       "graph-demo",
+				Title:    "Graph Demo",
+				Type:     "task",
+				IsRoot:   true,
+				Metadata: map[string]string{"gc.kind": "workflow", "gc.formula_contract": "graph.v2"},
+			},
+			{
+				ID:       "graph-demo.step",
+				Title:    "Step",
+				Type:     "task",
+				Metadata: map[string]string{"gc.kind": "run"},
+			},
+		},
+		Deps: []formula.RecipeDep{
+			{StepID: "graph-demo", DependsOnID: "graph-demo.step", Type: "blocks"},
+		},
+	}
+
+	result, err := Instantiate(context.Background(), store, recipe, Options{ParentID: parent.ID})
+	if err != nil {
+		t.Fatalf("Instantiate: %v", err)
+	}
+
+	root, err := store.Get(result.RootID)
+	if err != nil {
+		t.Fatalf("get root: %v", err)
+	}
+	if root.ParentID != "" {
+		t.Fatalf("graph workflow root ParentID = %q, want empty", root.ParentID)
+	}
+	if got := root.Metadata["gc.kind"]; got != "workflow" {
+		t.Fatalf("root gc.kind = %q, want workflow", got)
+	}
+}
+
+type recordingStore struct {
+	beads.Store
+	created []beads.Bead
+	updates []struct {
+		ID   string
+		Opts beads.UpdateOpts
+	}
+}
+
+func (r *recordingStore) Create(b beads.Bead) (beads.Bead, error) {
+	r.created = append(r.created, b)
+	return r.Store.Create(b)
+}
+
+func (r *recordingStore) Update(id string, opts beads.UpdateOpts) error {
+	r.updates = append(r.updates, struct {
+		ID   string
+		Opts beads.UpdateOpts
+	}{ID: id, Opts: opts})
+	return r.Store.Update(id, opts)
+}
+
+func TestInstantiateGraphWorkflowDefersAssignmentsOnlyForFutureBlockers(t *testing.T) {
+	base := beads.NewMemStore()
+	store := &recordingStore{Store: base}
+
+	recipe := &formula.Recipe{
+		Name: "graph-assign",
+		Steps: []formula.RecipeStep{
+			{
+				ID:       "graph-assign",
+				Title:    "Graph Assign",
+				Type:     "task",
+				IsRoot:   true,
+				Metadata: map[string]string{"gc.kind": "workflow", "gc.formula_contract": "graph.v2"},
+			},
+			{
+				ID:       "graph-assign.run",
+				Title:    "Run",
+				Type:     "task",
+				Assignee: "worker",
+			},
+			{
+				ID:       "graph-assign.setup",
+				Title:    "Setup",
+				Type:     "task",
+				Assignee: "worker",
+			},
+		},
+		Deps: []formula.RecipeDep{
+			{StepID: "graph-assign", DependsOnID: "graph-assign.run", Type: "blocks"},
+			{StepID: "graph-assign.run", DependsOnID: "graph-assign.setup", Type: "blocks"},
+		},
+	}
+
+	result, err := Instantiate(context.Background(), store, recipe, Options{})
+	if err != nil {
+		t.Fatalf("Instantiate: %v", err)
+	}
+
+	createdByRef := make(map[string]beads.Bead, len(store.created))
+	for _, created := range store.created {
+		createdByRef[created.Ref] = created
+	}
+	if got := createdByRef["graph-assign.setup"].Assignee; got != "worker" {
+		t.Fatalf("setup created assignee = %q, want worker", got)
+	}
+	if got := createdByRef["graph-assign.run"].Assignee; got != "" {
+		t.Fatalf("run created assignee = %q, want empty until blocker wiring completes", got)
+	}
+
+	setup, err := base.Get(result.IDMapping["graph-assign.setup"])
+	if err != nil {
+		t.Fatalf("get setup: %v", err)
+	}
+	run, err := base.Get(result.IDMapping["graph-assign.run"])
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if setup.Assignee != "worker" {
+		t.Fatalf("setup assignee = %q, want worker", setup.Assignee)
+	}
+	if run.Assignee != "worker" {
+		t.Fatalf("run assignee = %q, want worker", run.Assignee)
+	}
+
+	if len(store.updates) < 1 {
+		t.Fatalf("expected deferred assignment update for graph bead, got %d", len(store.updates))
+	}
+}
+
 func TestInstantiateWithIdempotencyKey(t *testing.T) {
 	store := beads.NewMemStore()
 	recipe := &formula.Recipe{
@@ -268,12 +406,12 @@ func TestInstantiateDepFailure(t *testing.T) {
 		Name: "dep-fail",
 		Steps: []formula.RecipeStep{
 			{ID: "dep-fail", Title: "Root", Type: "epic", IsRoot: true},
-			{ID: "dep-fail.a", Title: "A", Type: "task"},
 			{ID: "dep-fail.b", Title: "B", Type: "task"},
+			{ID: "dep-fail.a", Title: "A", Type: "task"},
 		},
 		Deps: []formula.RecipeDep{
-			{StepID: "dep-fail.a", DependsOnID: "dep-fail", Type: "parent-child"},
 			{StepID: "dep-fail.b", DependsOnID: "dep-fail", Type: "parent-child"},
+			{StepID: "dep-fail.a", DependsOnID: "dep-fail", Type: "parent-child"},
 			{StepID: "dep-fail.b", DependsOnID: "dep-fail.a", Type: "blocks"},
 		},
 	}
@@ -522,5 +660,105 @@ timeout = "2m"
 	}
 	if !foundLogicalBlock {
 		t.Fatalf("root bead does not block on logical bead; deps=%v", rootDeps)
+	}
+}
+
+func TestCookEndToEndScopedWorkflowStampsRootAndScopeMetadata(t *testing.T) {
+	dir := t.TempDir()
+	toml := `
+formula = "scoped-demo"
+version = 2
+
+[[steps]]
+id = "body"
+title = "Body"
+needs = ["work"]
+metadata = { "gc.kind" = "scope", "gc.scope_role" = "body", "gc.scope_name" = "worktree" }
+
+[[steps]]
+id = "work"
+title = "Work"
+metadata = { "gc.scope_ref" = "body", "gc.scope_role" = "member", "gc.on_fail" = "abort_scope", "gc.continuation_group" = "main" }
+
+[[steps]]
+id = "cleanup"
+title = "Cleanup"
+needs = ["body"]
+metadata = { "gc.scope_ref" = "body", "gc.scope_role" = "teardown", "gc.kind" = "cleanup" }
+`
+	if err := os.WriteFile(filepath.Join(dir, "scoped-demo.formula.toml"), []byte(toml), 0o644); err != nil {
+		t.Fatalf("writing formula: %v", err)
+	}
+
+	store := beads.NewMemStore()
+	result, err := Cook(context.Background(), store, "scoped-demo", []string{dir}, Options{})
+	if err != nil {
+		t.Fatalf("Cook: %v", err)
+	}
+	if !result.GraphWorkflow {
+		t.Fatal("result.GraphWorkflow = false, want true")
+	}
+
+	root, err := store.Get(result.RootID)
+	if err != nil {
+		t.Fatalf("get root: %v", err)
+	}
+	if got := root.Metadata["gc.kind"]; got != "workflow" {
+		t.Fatalf("root gc.kind = %q, want workflow", got)
+	}
+	if got := root.Metadata["gc.formula_contract"]; got != "graph.v2" {
+		t.Fatalf("root gc.formula_contract = %q, want graph.v2", got)
+	}
+
+	body, err := store.Get(result.IDMapping["scoped-demo.body"])
+	if err != nil {
+		t.Fatalf("get body: %v", err)
+	}
+	if got := body.Metadata["gc.step_ref"]; got != "scoped-demo.body" {
+		t.Fatalf("body gc.step_ref = %q, want %q", got, "scoped-demo.body")
+	}
+
+	work, err := store.Get(result.IDMapping["scoped-demo.work"])
+	if err != nil {
+		t.Fatalf("get work: %v", err)
+	}
+	if got := work.Metadata["gc.root_bead_id"]; got != result.RootID {
+		t.Fatalf("work gc.root_bead_id = %q, want %q", got, result.RootID)
+	}
+	if got := work.Metadata["gc.step_ref"]; got != "scoped-demo.work" {
+		t.Fatalf("work gc.step_ref = %q, want %q", got, "scoped-demo.work")
+	}
+	if got := work.Metadata["gc.scope_ref"]; got != "body" {
+		t.Fatalf("work gc.scope_ref = %q, want %q", got, "body")
+	}
+
+	cleanup, err := store.Get(result.IDMapping["scoped-demo.cleanup"])
+	if err != nil {
+		t.Fatalf("get cleanup: %v", err)
+	}
+	if got := cleanup.Metadata["gc.scope_ref"]; got != "body" {
+		t.Fatalf("cleanup gc.scope_ref = %q, want %q", got, "body")
+	}
+
+	scopeCheck, err := store.Get(result.IDMapping["scoped-demo.work-scope-check"])
+	if err != nil {
+		t.Fatalf("get scope-check: %v", err)
+	}
+	if got := scopeCheck.Metadata["gc.scope_ref"]; got != "body" {
+		t.Fatalf("scope-check gc.scope_ref = %q, want %q", got, "body")
+	}
+	if got := scopeCheck.Metadata["gc.root_bead_id"]; got != result.RootID {
+		t.Fatalf("scope-check gc.root_bead_id = %q, want %q", got, result.RootID)
+	}
+	if got := scopeCheck.Metadata["gc.step_ref"]; got != "scoped-demo.work-scope-check" {
+		t.Fatalf("scope-check gc.step_ref = %q, want %q", got, "scoped-demo.work-scope-check")
+	}
+
+	finalizer, err := store.Get(result.IDMapping["scoped-demo.workflow-finalize"])
+	if err != nil {
+		t.Fatalf("get workflow-finalize: %v", err)
+	}
+	if got := finalizer.Metadata["gc.root_bead_id"]; got != result.RootID {
+		t.Fatalf("workflow-finalize gc.root_bead_id = %q, want %q", got, result.RootID)
 	}
 }

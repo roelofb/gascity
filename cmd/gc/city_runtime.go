@@ -414,7 +414,7 @@ func (cr *CityRuntime) reloadConfig(
 				displayProviderName(*lastProviderName), displayProviderName(newProviderName), len(running))
 			gracefulStopAll(running, cr.sp, nextCfg.Daemon.ShutdownTimeoutDuration(), cr.rec, cr.cfg, cr.cityBeadStore(), cr.stdout, cr.stderr)
 		}
-		newSp, spErr := newSessionProviderByName(newProviderName, nextCfg.Session, cr.cityName)
+		newSp, spErr := newSessionProviderByName(newProviderName, nextCfg.Session, cr.cityName, cr.cityPath)
 		if spErr != nil {
 			fmt.Fprintf(cr.stderr, "%s: new session provider %q: %v (keeping old provider)\n", //nolint:errcheck
 				cr.logPrefix, newProviderName, spErr)

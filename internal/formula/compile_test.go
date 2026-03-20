@@ -267,3 +267,172 @@ timeout = "30s"
 	assertLacksDep("ralph-demo", "ralph-demo.implement.run.1", "blocks")
 	assertLacksDep("ralph-demo", "ralph-demo.implement.check.1", "blocks")
 }
+
+func TestCompileVersion2UsesGraphWorkflowRootAndNoParentChild(t *testing.T) {
+	dir := t.TempDir()
+	formulaContent := `
+formula = "graph-demo"
+version = 2
+
+[[steps]]
+id = "setup"
+title = "Setup"
+
+[[steps]]
+id = "work"
+title = "Work"
+needs = ["setup"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "graph-demo.formula.toml"), []byte(formulaContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	recipe, err := Compile(context.Background(), "graph-demo", []string{dir}, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	root := recipe.RootStep()
+	if root == nil {
+		t.Fatal("root step missing")
+	}
+	if root.Type != "task" {
+		t.Fatalf("root type = %q, want task", root.Type)
+	}
+	if got := root.Metadata["gc.kind"]; got != "workflow" {
+		t.Fatalf("root gc.kind = %q, want workflow", got)
+	}
+	if got := root.Metadata["gc.formula_contract"]; got != "graph.v2" {
+		t.Fatalf("root gc.formula_contract = %q, want graph.v2", got)
+	}
+	finalizer := recipe.StepByID("graph-demo.workflow-finalize")
+	if finalizer == nil {
+		t.Fatal("workflow-finalize step missing")
+	}
+	if got := finalizer.Metadata["gc.kind"]; got != "workflow-finalize" {
+		t.Fatalf("workflow-finalize gc.kind = %q, want workflow-finalize", got)
+	}
+
+	for _, dep := range recipe.Deps {
+		if dep.Type == "parent-child" {
+			t.Fatalf("unexpected parent-child dep in v2 recipe: %+v", dep)
+		}
+	}
+
+	foundBlocks := false
+	foundRootFinalize := false
+	for _, dep := range recipe.Deps {
+		if dep.StepID == "graph-demo.work" && dep.DependsOnID == "graph-demo.setup" && dep.Type == "blocks" {
+			foundBlocks = true
+		}
+		if dep.StepID == "graph-demo" && dep.DependsOnID == "graph-demo.workflow-finalize" && dep.Type == "blocks" {
+			foundRootFinalize = true
+		}
+	}
+	if !foundBlocks {
+		t.Fatal("missing work -> setup blocks dep")
+	}
+	if !foundRootFinalize {
+		t.Fatal("missing root -> workflow-finalize blocks dep")
+	}
+}
+
+func TestCompileScopedWorkCarriesScopeAndCleanupMetadata(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	repoRoot := filepath.Clean(filepath.Join(cwd, "..", ".."))
+	searchDir := filepath.Join(repoRoot, "cmd", "gc", "formulas")
+
+	recipe, err := Compile(context.Background(), "mol-scoped-work", []string{searchDir}, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	root := recipe.RootStep()
+	if root == nil {
+		t.Fatal("root step missing")
+	}
+	if got := root.Metadata["gc.formula_contract"]; got != "graph.v2" {
+		t.Fatalf("root gc.formula_contract = %q, want graph.v2", got)
+	}
+
+	body := recipe.StepByID("mol-scoped-work.body")
+	if body == nil {
+		t.Fatal("body step missing")
+	}
+	if got := body.Metadata["gc.kind"]; got != "scope" {
+		t.Fatalf("body gc.kind = %q, want scope", got)
+	}
+	if got := body.Metadata["gc.scope_name"]; got != "worktree" {
+		t.Fatalf("body gc.scope_name = %q, want worktree", got)
+	}
+
+	cleanup := recipe.StepByID("mol-scoped-work.cleanup-worktree")
+	if cleanup == nil {
+		t.Fatal("cleanup step missing")
+	}
+	if got := cleanup.Metadata["gc.scope_role"]; got != "teardown" {
+		t.Fatalf("cleanup gc.scope_role = %q, want teardown", got)
+	}
+	if got := cleanup.Metadata["gc.kind"]; got != "cleanup" {
+		t.Fatalf("cleanup gc.kind = %q, want cleanup", got)
+	}
+	scopeCheck := recipe.StepByID("mol-scoped-work.implement-scope-check")
+	if scopeCheck == nil {
+		t.Fatal("implement scope-check step missing")
+	}
+	if got := scopeCheck.Metadata["gc.kind"]; got != "scope-check" {
+		t.Fatalf("scope-check gc.kind = %q, want scope-check", got)
+	}
+	finalizer := recipe.StepByID("mol-scoped-work.workflow-finalize")
+	if finalizer == nil {
+		t.Fatal("workflow-finalize step missing")
+	}
+	if got := finalizer.Metadata["gc.kind"]; got != "workflow-finalize" {
+		t.Fatalf("workflow-finalize gc.kind = %q, want workflow-finalize", got)
+	}
+
+	foundCleanupDep := false
+	foundRootFinalize := false
+	foundFinalizeBody := false
+	for _, dep := range recipe.Deps {
+		if dep.StepID == cleanup.ID && dep.DependsOnID == body.ID && dep.Type == "blocks" {
+			foundCleanupDep = true
+		}
+		if dep.StepID == root.ID && dep.DependsOnID == finalizer.ID && dep.Type == "blocks" {
+			foundRootFinalize = true
+		}
+		if dep.StepID == finalizer.ID && dep.DependsOnID == body.ID && dep.Type == "blocks" {
+			foundFinalizeBody = true
+		}
+	}
+	if !foundCleanupDep {
+		t.Fatalf("missing cleanup -> body blocks dep")
+	}
+	if !foundRootFinalize {
+		t.Fatalf("missing workflow root -> workflow-finalize blocks dep")
+	}
+	if !foundFinalizeBody {
+		t.Fatalf("missing workflow-finalize -> body blocks dep")
+	}
+
+	indexByID := make(map[string]int, len(recipe.Steps))
+	for i, step := range recipe.Steps {
+		indexByID[step.ID] = i
+	}
+	assertBefore := func(first, second string) {
+		t.Helper()
+		if indexByID[first] >= indexByID[second] {
+			t.Fatalf("step order %s (%d) should come before %s (%d)", first, indexByID[first], second, indexByID[second])
+		}
+	}
+
+	assertBefore("mol-scoped-work.load-context", "mol-scoped-work.workspace-setup")
+	assertBefore("mol-scoped-work.workspace-setup", "mol-scoped-work.workspace-setup-scope-check")
+	assertBefore("mol-scoped-work.preflight-tests", "mol-scoped-work.preflight-tests-scope-check")
+	assertBefore("mol-scoped-work.submit-scope-check", "mol-scoped-work.body")
+	assertBefore("mol-scoped-work.body", "mol-scoped-work.cleanup-worktree")
+	assertBefore("mol-scoped-work.cleanup-worktree", "mol-scoped-work.workflow-finalize")
+}

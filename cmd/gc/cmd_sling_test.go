@@ -1284,6 +1284,134 @@ func TestOnFormulaAttachesAndRoutes(t *testing.T) {
 	}
 }
 
+func TestOnFormulaGraphWorkflowPreassignsNonLatchBeadsForFixedAgent(t *testing.T) {
+	runner := newFakeRunner()
+	sp := runtime.NewFake()
+	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
+	cfg.FormulaLayers.City = []string{testFormulaDir(t)}
+	a := config.Agent{Name: "mayor"}
+
+	graphFormula := `
+formula = "graph-work"
+version = 2
+
+[[steps]]
+id = "step"
+title = "Do work"
+`
+	if err := os.WriteFile(filepath.Join(cfg.FormulaLayers.City[0], "graph-work.formula.toml"), []byte(graphFormula), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	deps, stdout, stderr := testDeps(cfg, sp, runner.run)
+	deps.Store = beads.NewMemStoreFrom(1, []beads.Bead{
+		{ID: "BL-42", Title: "Work", Type: "task", Status: "open"},
+	}, nil)
+	opts := testOpts(a, "BL-42")
+	opts.OnFormula = "graph-work"
+	code := doSling(opts, deps, nil)
+
+	if code != 0 {
+		t.Fatalf("doSling returned %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("graph workflow runner calls = %d, want 0; calls=%v", len(runner.calls), runner.calls)
+	}
+
+	parent, err := deps.Store.Get("BL-42")
+	if err != nil {
+		t.Fatalf("get parent: %v", err)
+	}
+	rootID := parent.Metadata["workflow_id"]
+	if rootID == "" {
+		t.Fatal("parent workflow_id missing")
+	}
+
+	root, err := deps.Store.Get(rootID)
+	if err != nil {
+		t.Fatalf("get workflow root: %v", err)
+	}
+	if got := root.Metadata["gc.run_target"]; got != "mayor" {
+		t.Fatalf("root gc.run_target = %q, want mayor", got)
+	}
+	if got := root.Metadata["gc.source_bead_id"]; got != "BL-42" {
+		t.Fatalf("root gc.source_bead_id = %q, want BL-42", got)
+	}
+	all, err := deps.Store.List()
+	if err != nil {
+		t.Fatalf("list workflow beads: %v", err)
+	}
+	assigned := 0
+	for _, bead := range all {
+		if bead.Metadata["gc.root_bead_id"] != rootID {
+			continue
+		}
+		switch bead.Metadata["gc.kind"] {
+		case "workflow", "scope":
+			if bead.Assignee != "" {
+				t.Fatalf("latch bead %s assignee = %q, want empty", bead.ID, bead.Assignee)
+			}
+		default:
+			if bead.Assignee != "mayor" {
+				t.Fatalf("workflow bead %s assignee = %q, want mayor", bead.ID, bead.Assignee)
+			}
+			if bead.Metadata["gc.routed_to"] != "mayor" {
+				t.Fatalf("workflow bead %s gc.routed_to = %q, want mayor", bead.ID, bead.Metadata["gc.routed_to"])
+			}
+			assigned++
+		}
+	}
+	if assigned == 0 {
+		t.Fatal("expected at least one assigned workflow bead")
+	}
+	if !strings.Contains(stdout.String(), "Attached workflow") {
+		t.Fatalf("stdout = %q, want attached workflow message", stdout.String())
+	}
+}
+
+func TestOnFormulaGraphWorkflowPokesOnce(t *testing.T) {
+	runner := newFakeRunner()
+	sp := runtime.NewFake()
+	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
+	cfg.FormulaLayers.City = []string{testFormulaDir(t)}
+	a := config.Agent{Name: "mayor"}
+
+	graphFormula := `
+formula = "graph-work"
+version = 2
+
+[[steps]]
+id = "step"
+title = "Do work"
+`
+	if err := os.WriteFile(filepath.Join(cfg.FormulaLayers.City[0], "graph-work.formula.toml"), []byte(graphFormula), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	deps, _, stderr := testDeps(cfg, sp, runner.run)
+	deps.Store = beads.NewMemStoreFrom(1, []beads.Bead{
+		{ID: "BL-42", Title: "Work", Type: "task", Status: "open"},
+	}, nil)
+	opts := testOpts(a, "BL-42")
+	opts.OnFormula = "graph-work"
+
+	oldPoke := slingPokeController
+	defer func() { slingPokeController = oldPoke }()
+	pokes := 0
+	slingPokeController = func(string) error {
+		pokes++
+		return nil
+	}
+
+	code := doSling(opts, deps, nil)
+	if code != 0 {
+		t.Fatalf("doSling returned %d, want 0; stderr: %s", code, stderr.String())
+	}
+	if pokes != 1 {
+		t.Fatalf("graph workflow pokes = %d, want 1", pokes)
+	}
+}
+
 func TestOnFormulaWithTitle(t *testing.T) {
 	runner := newFakeRunner()
 	sp := runtime.NewFake()
@@ -3421,6 +3549,7 @@ func TestLooksLikeBeadID(t *testing.T) {
 		{"mp-bfg", true},
 		{"od-2ie", true},
 		{"BL-42a", true},
+		{"g6-53b", true},
 
 		// Inline text (not bead IDs).
 		{"write a README", false},

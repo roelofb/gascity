@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -159,5 +160,19 @@ func workQueryHasReadyWork(output string) bool {
 	}
 	// Newer bd versions print a human-readable no-work line to stdout instead
 	// of staying silent. Treat that as "no work" for hooks and WakeWork.
-	return !strings.Contains(output, "No ready work found")
+	if strings.Contains(output, "No ready work found") {
+		return false
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(output), &decoded); err == nil {
+		switch v := decoded.(type) {
+		case []any:
+			return len(v) > 0
+		case map[string]any:
+			return len(v) > 0
+		case nil:
+			return false
+		}
+	}
+	return true
 }

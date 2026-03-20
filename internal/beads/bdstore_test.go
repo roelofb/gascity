@@ -91,6 +91,26 @@ func TestBdStoreCreatePreservesExplicitType(t *testing.T) {
 	}
 }
 
+func TestBdStoreCreatePassesDeps(t *testing.T) {
+	var gotArgs []string
+	runner := func(_, _ string, args ...string) ([]byte, error) {
+		gotArgs = args
+		return []byte(`{"id":"bd-x","title":"test","status":"open","issue_type":"task","created_at":"2025-01-15T10:30:00Z"}`), nil
+	}
+	s := beads.NewBdStore("/city", runner)
+	_, err := s.Create(beads.Bead{
+		Title: "test",
+		Needs: []string{"bd-1", "validates:bd-2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(gotArgs, " ")
+	if !strings.Contains(args, "--deps bd-1,validates:bd-2") {
+		t.Errorf("args = %q, want combined deps flag", args)
+	}
+}
+
 func TestBdStoreCreateError(t *testing.T) {
 	runner := func(_, _ string, _ ...string) ([]byte, error) {
 		return nil, fmt.Errorf("exit status 1")

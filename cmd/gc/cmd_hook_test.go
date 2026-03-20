@@ -138,6 +138,18 @@ func TestHookPassesWorkQuery(t *testing.T) {
 	}
 }
 
+func TestWorkQueryHasReadyWorkEmptyJSONArray(t *testing.T) {
+	if workQueryHasReadyWork("[]") {
+		t.Fatal("workQueryHasReadyWork([]) = true, want false")
+	}
+}
+
+func TestWorkQueryHasReadyWorkNonEmptyJSONArray(t *testing.T) {
+	if !workQueryHasReadyWork(`[{"id":"abc"}]`) {
+		t.Fatal("workQueryHasReadyWork(non-empty array) = false, want true")
+	}
+}
+
 func TestCmdHookUsesAgentCityAndRigRoot(t *testing.T) {
 	cityDir := t.TempDir()
 	rigDir := filepath.Join(cityDir, "myrig-repo")

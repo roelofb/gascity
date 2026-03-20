@@ -66,7 +66,9 @@ type Formula struct {
 	// Description explains what this formula does.
 	Description string `json:"description,omitempty"`
 
-	// Version is the schema version (currently 1).
+	// Version is the schema version.
+	// Version 1 uses the legacy hierarchy-first compilation model.
+	// Version 2 opts into graph-first workflow compilation.
 	Version int `json:"version"`
 
 	// Type categorizes the formula: workflow, expansion, or aspect.

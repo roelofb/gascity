@@ -126,7 +126,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		newSupervisorCmd(stdout, stderr),
 		newSessionCmd(stdout, stderr),
 		newConvergeCmd(stdout, stderr),
-		newRalphCmd(stdout, stderr),
+		newWorkflowCmd(stdout, stderr),
 		newRuntimeCmd(stdout, stderr),
 		newFormulaCmd(stdout, stderr),
 	)

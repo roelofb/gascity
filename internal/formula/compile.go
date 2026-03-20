@@ -125,7 +125,10 @@ func Compile(_ context.Context, name string, searchPaths []string, vars map[stri
 	}
 	resolved.Steps = ralphSteps
 
-	// Stage 11: Flatten to Recipe
+	// Stage 11: Add graph-first control beads for v2 workflow formulas.
+	ApplyGraphControls(resolved)
+
+	// Stage 12: Flatten to Recipe
 	return toRecipe(resolved), nil
 }
 
@@ -140,7 +143,7 @@ func toRecipe(f *Formula) *Recipe {
 		Pour:        f.Pour,
 	}
 
-	graphWorkflow := hasDetachedGraphSteps(f.Steps)
+	graphWorkflow := isGraphWorkflow(f)
 
 	// Determine root title: use {{title}} placeholder if the variable
 	// is defined, otherwise fall back to formula name.
@@ -168,6 +171,9 @@ func toRecipe(f *Formula) *Recipe {
 	}
 	if graphWorkflow {
 		rootStep.Metadata = map[string]string{"gc.kind": "workflow"}
+		if f.Version >= 2 {
+			rootStep.Metadata["gc.formula_contract"] = "graph.v2"
+		}
 	}
 	defPriority := 2
 	rootStep.Priority = &defPriority
@@ -181,20 +187,94 @@ func toRecipe(f *Formula) *Recipe {
 
 	// Flatten step tree
 	idMapping := make(map[string]string) // step.ID -> namespaced ID
-	flattenSteps(f.Steps, f.Formula, idMapping, &r.Steps, &r.Deps)
+	flattenSteps(f.Steps, f.Formula, idMapping, &r.Steps, &r.Deps, graphWorkflow)
 
 	// Collect dependency edges from depends_on/needs/waits_for
 	collectRecipeDeps(f.Steps, idMapping, &r.Deps)
 	if graphWorkflow {
 		addWorkflowRootDeps(f.Formula, f.Steps, idMapping, &r.Deps)
+		if f.Version >= 2 {
+			r.Steps = orderGraphRecipeSteps(f.Formula, r.Steps, r.Deps)
+		}
 	}
 
 	return r
 }
 
+func orderGraphRecipeSteps(rootID string, steps []RecipeStep, deps []RecipeDep) []RecipeStep {
+	if len(steps) <= 2 {
+		return steps
+	}
+
+	stepByID := make(map[string]RecipeStep, len(steps))
+	order := make(map[string]int, len(steps))
+	inDegree := make(map[string]int, len(steps))
+	edges := make(map[string][]string, len(steps))
+
+	root := steps[0]
+	orderedIDs := make([]string, 0, len(steps)-1)
+	for i, step := range steps {
+		stepByID[step.ID] = step
+		order[step.ID] = i
+		if step.ID == rootID {
+			root = step
+			continue
+		}
+		orderedIDs = append(orderedIDs, step.ID)
+		inDegree[step.ID] = 0
+	}
+
+	for _, dep := range deps {
+		if dep.Type == "parent-child" || dep.StepID == rootID {
+			continue
+		}
+		if _, ok := inDegree[dep.StepID]; !ok {
+			continue
+		}
+		if _, ok := inDegree[dep.DependsOnID]; !ok {
+			continue
+		}
+		edges[dep.DependsOnID] = append(edges[dep.DependsOnID], dep.StepID)
+		inDegree[dep.StepID]++
+	}
+
+	ready := make([]string, 0)
+	for _, id := range orderedIDs {
+		if inDegree[id] == 0 {
+			ready = append(ready, id)
+		}
+	}
+
+	result := make([]RecipeStep, 0, len(steps))
+	result = append(result, root)
+	for len(ready) > 0 {
+		bestIdx := 0
+		for i := 1; i < len(ready); i++ {
+			if order[ready[i]] < order[ready[bestIdx]] {
+				bestIdx = i
+			}
+		}
+		id := ready[bestIdx]
+		ready = append(ready[:bestIdx], ready[bestIdx+1:]...)
+		result = append(result, stepByID[id])
+
+		for _, next := range edges[id] {
+			inDegree[next]--
+			if inDegree[next] == 0 {
+				ready = append(ready, next)
+			}
+		}
+	}
+
+	if len(result) != len(steps) {
+		return steps
+	}
+	return result
+}
+
 // flattenSteps recursively converts formula Steps into RecipeSteps,
 // generating namespaced IDs and parent-child dependency edges where applicable.
-func flattenSteps(steps []*Step, parentID string, idMapping map[string]string, out *[]RecipeStep, deps *[]RecipeDep) {
+func flattenSteps(steps []*Step, parentID string, idMapping map[string]string, out *[]RecipeStep, deps *[]RecipeDep, graphWorkflow bool) {
 	for _, step := range steps {
 		issueID := parentID + "." + step.ID
 		idMapping[step.ID] = issueID
@@ -229,7 +309,7 @@ func flattenSteps(steps []*Step, parentID string, idMapping map[string]string, o
 
 		// Ralph-generated graph nodes intentionally avoid parent-child semantics.
 		// They are linked only through explicit blocking deps.
-		if !isDetachedGraphStep(step) {
+		if !graphWorkflow && !isDetachedGraphStep(step) {
 			*deps = append(*deps, RecipeDep{
 				StepID:      issueID,
 				DependsOnID: parentID,
@@ -263,11 +343,13 @@ func flattenSteps(steps []*Step, parentID string, idMapping map[string]string, o
 			idMapping["gate-"+step.ID] = gateID
 
 			// Gate is a child of the parent
-			*deps = append(*deps, RecipeDep{
-				StepID:      gateID,
-				DependsOnID: parentID,
-				Type:        "parent-child",
-			})
+			if !graphWorkflow {
+				*deps = append(*deps, RecipeDep{
+					StepID:      gateID,
+					DependsOnID: parentID,
+					Type:        "parent-child",
+				})
+			}
 			// Step depends on gate (gate blocks the step)
 			*deps = append(*deps, RecipeDep{
 				StepID:      issueID,
@@ -278,9 +360,19 @@ func flattenSteps(steps []*Step, parentID string, idMapping map[string]string, o
 
 		// Recurse into children
 		if len(step.Children) > 0 {
-			flattenSteps(step.Children, issueID, idMapping, out, deps)
+			flattenSteps(step.Children, issueID, idMapping, out, deps, graphWorkflow)
 		}
 	}
+}
+
+func isGraphWorkflow(f *Formula) bool {
+	if f == nil {
+		return false
+	}
+	if f.Version >= 2 {
+		return true
+	}
+	return hasDetachedGraphSteps(f.Steps)
 }
 
 func isDetachedGraphStep(step *Step) bool {
@@ -308,6 +400,18 @@ func hasDetachedGraphSteps(steps []*Step) bool {
 }
 
 func addWorkflowRootDeps(rootID string, steps []*Step, idMapping map[string]string, deps *[]RecipeDep) {
+	for _, step := range steps {
+		if step != nil && step.Metadata["gc.kind"] == "workflow-finalize" {
+			if issueID, ok := idMapping[step.ID]; ok {
+				*deps = append(*deps, RecipeDep{
+					StepID:      rootID,
+					DependsOnID: issueID,
+					Type:        "blocks",
+				})
+			}
+			return
+		}
+	}
 	for _, step := range steps {
 		if !isWorkflowRootBlocker(step) {
 			continue

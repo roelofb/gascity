@@ -13,12 +13,15 @@
 package integration
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/test/tmuxtest"
 )
@@ -36,6 +39,12 @@ var testGCHome string
 // testRuntimeDir isolates the supervisor lock/socket from the developer's
 // real XDG runtime directory.
 var testRuntimeDir string
+
+const (
+	integrationGCCommandTimeout     = 60 * time.Second
+	integrationGCDoltCommandTimeout = 120 * time.Second
+	integrationBDCommandTimeout     = 15 * time.Second
+)
 
 // TestMain builds the gc binary and runs pre/post sweeps of orphan sessions.
 func TestMain(m *testing.M) {
@@ -110,25 +119,70 @@ func TestMain(m *testing.M) {
 // gc runs the gc binary with the given args. If dir is non-empty, it sets
 // the working directory. Returns combined stdout+stderr and any error.
 func gc(dir string, args ...string) (string, error) {
-	cmd := exec.Command(gcBinary, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	cmd.Env = integrationEnv()
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return runCommand(dir, integrationEnv(), integrationGCCommandTimeout, gcBinary, args...)
+}
+
+// gcDolt runs the gc binary with the given args using the isolated integration
+// supervisor state, but without forcing GC_DOLT=skip. Use this for tests that
+// need the real bd+dolt-backed bead store.
+func gcDolt(dir string, args ...string) (string, error) {
+	return runCommand(dir, integrationEnvDolt(), integrationGCDoltCommandTimeout, gcBinary, args...)
 }
 
 // bd runs the bd binary with the given args. If dir is non-empty, it sets
 // the working directory. Returns combined stdout+stderr and any error.
 func bd(dir string, args ...string) (string, error) {
-	cmd := exec.Command(bdBinary, args...)
+	return runCommand(dir, os.Environ(), integrationBDCommandTimeout, bdBinary, args...)
+}
+
+// bdDolt runs bd against a Dolt-backed city using the same isolated runtime
+// env as integration gc commands plus the city's managed Dolt port.
+func bdDolt(dir string, args ...string) (string, error) {
+	env := integrationEnvDolt()
+	if dir != "" {
+		env = filterEnv(env, "GC_CITY")
+		env = filterEnv(env, "GC_CITY_ROOT")
+		env = filterEnv(env, "GC_CITY_PATH")
+		env = filterEnv(env, "GC_CITY_RUNTIME_DIR")
+		env = append(env,
+			"GC_CITY="+dir,
+			"GC_CITY_ROOT="+dir,
+			"GC_CITY_PATH="+dir,
+			"GC_CITY_RUNTIME_DIR="+filepath.Join(dir, ".gc", "runtime"),
+		)
+		if data, err := os.ReadFile(filepath.Join(dir, ".beads", "dolt-server.port")); err == nil {
+			port := strings.TrimSpace(string(data))
+			if port != "" {
+				env = filterEnv(env, "GC_DOLT_PORT")
+				env = append(env, "GC_DOLT_PORT="+port)
+			}
+		}
+	}
+	return runCommand(dir, env, integrationBDCommandTimeout, bdBinary, args...)
+}
+
+func runCommand(dir string, env []string, timeout time.Duration, binary string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binary, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = os.Environ()
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
-	return string(out), err
+	output := string(out)
+	if ctx.Err() == context.DeadlineExceeded {
+		return output, fmt.Errorf("timed out after %s running %s", timeout, renderCommand(binary, args...))
+	}
+	return output, err
+}
+
+func renderCommand(binary string, args ...string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, binary)
+	parts = append(parts, args...)
+	return strings.Join(parts, " ")
 }
 
 // findModuleRoot walks up from the current directory to find go.mod.
@@ -171,6 +225,18 @@ func integrationEnv() []string {
 	env = filterEnv(env, "GC_HOME")
 	env = filterEnv(env, "XDG_RUNTIME_DIR")
 	env = append(env, "GC_DOLT=skip")
+	env = append(env, "GC_HOME="+testGCHome)
+	env = append(env, "XDG_RUNTIME_DIR="+testRuntimeDir)
+	env = append(env, "PATH="+filepath.Dir(gcBinary)+":"+filepath.Dir(bdBinary)+":"+os.Getenv("PATH"))
+	return env
+}
+
+func integrationEnvDolt() []string {
+	env := filterEnv(os.Environ(), "GC_BEADS")
+	env = filterEnv(env, "GC_DOLT")
+	env = filterEnv(env, "PATH")
+	env = filterEnv(env, "GC_HOME")
+	env = filterEnv(env, "XDG_RUNTIME_DIR")
 	env = append(env, "GC_HOME="+testGCHome)
 	env = append(env, "XDG_RUNTIME_DIR="+testRuntimeDir)
 	env = append(env, "PATH="+filepath.Dir(gcBinary)+":"+filepath.Dir(bdBinary)+":"+os.Getenv("PATH"))

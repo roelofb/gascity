@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -96,8 +99,14 @@ func TestResolveTemplateUsesWorkDirForCityScopedAgents(t *testing.T) {
 	if tp.RigName != "" {
 		t.Fatalf("RigName = %q, want empty", tp.RigName)
 	}
-	if tp.Env["GC_RIG"] != "" {
-		t.Fatalf("GC_RIG = %q, want empty", tp.Env["GC_RIG"])
+	if got, ok := tp.Env["GC_RIG"]; !ok || got != "" {
+		t.Fatalf("GC_RIG = %q present=%v, want explicit empty", got, ok)
+	}
+	if got, ok := tp.Env["GC_RIG_ROOT"]; !ok || got != "" {
+		t.Fatalf("GC_RIG_ROOT = %q present=%v, want explicit empty", got, ok)
+	}
+	if got, ok := tp.Env["BEADS_DIR"]; !ok || got != "" {
+		t.Fatalf("BEADS_DIR = %q present=%v, want explicit empty", got, ok)
 	}
 	if tp.Env["GT_ROOT"] != cityPath {
 		t.Fatalf("GT_ROOT = %q, want %q", tp.Env["GT_ROOT"], cityPath)
@@ -181,5 +190,62 @@ func TestResolveTemplateRigScopedEnvCarriesRigRoots(t *testing.T) {
 	}
 	if tp.Env["GT_ROOT"] != cityPath {
 		t.Fatalf("GT_ROOT = %q, want city root %q", tp.Env["GT_ROOT"], cityPath)
+	}
+}
+
+func TestResolveTemplateUsesCityManagedDoltPort(t *testing.T) {
+	cityPath := t.TempDir()
+	stateDir := filepath.Join(cityPath, ".gc", "runtime", "packs", "dolt")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	state := doltRuntimeState{
+		Running:   true,
+		PID:       os.Getpid(),
+		Port:      port,
+		DataDir:   filepath.Join(cityPath, ".beads", "dolt"),
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal dolt state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "dolt-state.json"), data, 0o644); err != nil {
+		t.Fatalf("write dolt state: %v", err)
+	}
+
+	t.Setenv("GC_DOLT_PORT", "9999")
+
+	params := &agentBuildParams{
+		cityName:   "city",
+		cityPath:   cityPath,
+		workspace:  &config.Workspace{Provider: "test"},
+		providers:  map[string]config.ProviderSpec{"test": {Command: "echo", PromptMode: "none"}},
+		lookPath:   func(string) (string, error) { return "/bin/echo", nil },
+		fs:         fsys.OSFS{},
+		beaconTime: time.Unix(0, 0),
+		beadNames:  make(map[string]string),
+		stderr:     io.Discard,
+	}
+
+	agent := &config.Agent{Name: "worker"}
+	tp, err := resolveTemplate(params, agent, agent.QualifiedName(), nil)
+	if err != nil {
+		t.Fatalf("resolveTemplate: %v", err)
+	}
+
+	if got := tp.Env["GC_DOLT_PORT"]; got != strconv.Itoa(port) {
+		t.Fatalf("GC_DOLT_PORT = %q, want %q", got, strconv.Itoa(port))
+	}
+	if got := tp.Env["GC_BIN"]; got == "" {
+		t.Fatalf("GC_BIN = %q, want non-empty", got)
 	}
 }

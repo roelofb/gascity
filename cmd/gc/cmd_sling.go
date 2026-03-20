@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/molecule"
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -122,6 +124,7 @@ type slingOpts struct {
 	IsFormula     bool
 	OnFormula     string
 	NoFormula     bool
+	SkipPoke      bool
 	Title         string
 	Vars          []string
 	Merge         string // "", "direct", "mr", "local"
@@ -131,6 +134,8 @@ type slingOpts struct {
 	Force         bool
 	DryRun        bool
 }
+
+var slingPokeController = pokeController
 
 // slingDeps bundles infrastructure dependencies injected for testability.
 type slingDeps struct {
@@ -427,13 +432,20 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier) int {
 	if opts.IsFormula {
 		method = "formula"
 		formulaVars := buildSlingFormulaVars(opts.BeadOrFormula, "", opts.Vars, a, deps)
-		result, err := molecule.Cook(context.Background(), deps.Store, opts.BeadOrFormula, slingFormulaSearchPaths(deps, a), molecule.Options{
+		result, err := instantiateSlingFormula(context.Background(), opts.BeadOrFormula, slingFormulaSearchPaths(deps, a), molecule.Options{
 			Title: opts.Title,
 			Vars:  formulaVars,
-		})
+		}, "", a, deps)
 		if err != nil {
 			fmt.Fprintf(deps.Stderr, "gc sling: instantiating formula %q: %v\n", opts.BeadOrFormula, err) //nolint:errcheck // best-effort
 			return 1
+		}
+		if result.GraphWorkflow || isGraphWorkflowAttachment(deps.Store, result.RootID) {
+			if code := startGraphWorkflow(result, "", a, method, deps); code != 0 {
+				return code
+			}
+			fmt.Fprintf(deps.Stdout, "Started workflow %s (formula %q) → %s\n", result.RootID, opts.BeadOrFormula, a.QualifiedName()) //nolint:errcheck // best-effort
+			return 0
 		}
 		beadID = result.RootID
 	}
@@ -446,16 +458,23 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier) int {
 			return 1
 		}
 		formulaVars := buildSlingFormulaVars(opts.OnFormula, beadID, opts.Vars, a, deps)
-		result, err := molecule.Cook(context.Background(), deps.Store, opts.OnFormula, slingFormulaSearchPaths(deps, a), molecule.Options{
+		result, err := instantiateSlingFormula(context.Background(), opts.OnFormula, slingFormulaSearchPaths(deps, a), molecule.Options{
 			Title:    opts.Title,
 			Vars:     formulaVars,
 			ParentID: beadID,
-		})
+		}, beadID, a, deps)
 		if err != nil {
 			fmt.Fprintf(deps.Stderr, "gc sling: instantiating formula %q on %s: %v\n", opts.OnFormula, beadID, err) //nolint:errcheck // best-effort
 			return 1
 		}
 		wispRootID := result.RootID
+		if result.GraphWorkflow || isGraphWorkflowAttachment(deps.Store, wispRootID) {
+			if code := startGraphWorkflow(result, beadID, a, method, deps); code != 0 {
+				return code
+			}
+			fmt.Fprintf(deps.Stdout, "Attached workflow %s (formula %q) to %s\n", wispRootID, opts.OnFormula, beadID) //nolint:errcheck // best-effort
+			return 0
+		}
 		// Record molecule_id on the work bead so agents can discover it
 		// without traversing dependencies.
 		if err := deps.Store.SetMetadata(beadID, "molecule_id", wispRootID); err != nil {
@@ -474,17 +493,24 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier) int {
 			return 1
 		}
 		defaultVars := buildSlingFormulaVars(a.DefaultSlingFormula, beadID, opts.Vars, a, deps)
-		result, err := molecule.Cook(context.Background(), deps.Store, a.DefaultSlingFormula, slingFormulaSearchPaths(deps, a), molecule.Options{
+		result, err := instantiateSlingFormula(context.Background(), a.DefaultSlingFormula, slingFormulaSearchPaths(deps, a), molecule.Options{
 			Title:    opts.Title,
 			Vars:     defaultVars,
 			ParentID: beadID,
-		})
+		}, beadID, a, deps)
 		if err != nil {
 			fmt.Fprintf(deps.Stderr, "gc sling: instantiating default formula %q on %s: %v\n", //nolint:errcheck // best-effort
 				a.DefaultSlingFormula, beadID, err)
 			return 1
 		}
 		wispRootID := result.RootID
+		if result.GraphWorkflow || isGraphWorkflowAttachment(deps.Store, wispRootID) {
+			if code := startGraphWorkflow(result, beadID, a, method, deps); code != 0 {
+				return code
+			}
+			fmt.Fprintf(deps.Stdout, "Attached workflow %s (default formula %q) to %s\n", wispRootID, a.DefaultSlingFormula, beadID) //nolint:errcheck // best-effort
+			return 0
+		}
 		// Record molecule_id on the work bead so agents can discover it
 		// without traversing dependencies.
 		if err := deps.Store.SetMetadata(beadID, "molecule_id", wispRootID); err != nil {
@@ -556,7 +582,9 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier) int {
 
 	// Poke controller/supervisor to trigger immediate reconciliation
 	// so pool agents wake without waiting for the next patrol tick.
-	_ = pokeController(deps.CityPath)
+	if !opts.SkipPoke {
+		_ = slingPokeController(deps.CityPath)
+	}
 
 	// Nudge target if requested.
 	if opts.Nudge {
@@ -837,7 +865,7 @@ func slingFormulaRepoDir(beadID string, deps slingDeps, a config.Agent) string {
 }
 
 func slingFormulaUsesBaseBranch(formula string) bool {
-	return strings.HasPrefix(formula, "mol-polecat-")
+	return strings.HasPrefix(formula, "mol-polecat-") || formula == "mol-scoped-work"
 }
 
 func slingFormulaUsesTargetBranch(formula string) bool {
@@ -901,6 +929,9 @@ func checkNoMoleculeChildren(q BeadQuerier, beadID string, store beads.Store, w 
 
 	for _, c := range children {
 		if !beads.IsMoleculeType(c.Type) {
+			if c.Metadata["gc.kind"] == "workflow" {
+				return fmt.Errorf("bead %s already has attached workflow %s", beadID, c.ID)
+			}
 			continue
 		}
 		// Skip closed molecules — they're done.
@@ -934,6 +965,9 @@ func checkBatchNoMoleculeChildren(q BeadChildQuerier, open []beads.Bead, store b
 		childUnassigned := child.Assignee == ""
 		for _, c := range children {
 			if !beads.IsMoleculeType(c.Type) {
+				if c.Metadata["gc.kind"] == "workflow" {
+					problems = append(problems, fmt.Sprintf("%s (has workflow %s)", child.ID, c.ID))
+				}
 				continue
 			}
 			// Skip closed molecules — they're done.
@@ -955,6 +989,90 @@ func checkBatchNoMoleculeChildren(q BeadChildQuerier, open []beads.Bead, store b
 			strings.Join(problems, ", "))
 	}
 	return nil
+}
+
+func isGraphWorkflowAttachment(store beads.Store, rootID string) bool {
+	if store == nil || rootID == "" {
+		return false
+	}
+	b, err := store.Get(rootID)
+	if err != nil {
+		return false
+	}
+	return b.Metadata["gc.kind"] == "workflow" && b.Metadata["gc.formula_contract"] == "graph.v2"
+}
+
+func instantiateSlingFormula(ctx context.Context, formulaName string, searchPaths []string, opts molecule.Options, sourceBeadID string, a config.Agent, deps slingDeps) (*molecule.Result, error) {
+	recipe, err := formula.Compile(ctx, formulaName, searchPaths, opts.Vars)
+	if err != nil {
+		return nil, err
+	}
+	if isCompiledGraphWorkflow(recipe) {
+		if a.IsPool() {
+			return nil, fmt.Errorf("graph.v2 workflows currently require a fixed-agent target")
+		}
+		sessionName := lookupSessionNameOrLegacy(deps.Store, deps.CityName, a.QualifiedName(), deps.Cfg.Workspace.SessionTemplate)
+		if sessionName == "" {
+			return nil, fmt.Errorf("could not resolve session name for %q", a.QualifiedName())
+		}
+		if err := decorateGraphWorkflowRecipe(recipe, sourceBeadID, a.QualifiedName(), sessionName); err != nil {
+			return nil, err
+		}
+	}
+	return molecule.Instantiate(ctx, deps.Store, recipe, opts)
+}
+
+func isCompiledGraphWorkflow(recipe *formula.Recipe) bool {
+	if recipe == nil || len(recipe.Steps) == 0 {
+		return false
+	}
+	root := recipe.Steps[0]
+	return root.Metadata["gc.kind"] == "workflow" && root.Metadata["gc.formula_contract"] == "graph.v2"
+}
+
+func decorateGraphWorkflowRecipe(recipe *formula.Recipe, sourceBeadID, routedTo, sessionName string) error {
+	if recipe == nil {
+		return fmt.Errorf("workflow recipe is nil")
+	}
+	for i := range recipe.Steps {
+		step := &recipe.Steps[i]
+		if step.Metadata == nil {
+			step.Metadata = make(map[string]string)
+		} else {
+			step.Metadata = maps.Clone(step.Metadata)
+		}
+		if step.IsRoot {
+			step.Metadata["gc.run_target"] = routedTo
+			if sourceBeadID != "" {
+				step.Metadata["gc.source_bead_id"] = sourceBeadID
+			}
+			continue
+		}
+		switch step.Metadata["gc.kind"] {
+		case "workflow", "scope":
+			continue
+		}
+		if step.Assignee != "" && step.Assignee != sessionName {
+			return fmt.Errorf("step %s already assigned to %q", step.ID, step.Assignee)
+		}
+		step.Assignee = sessionName
+		step.Metadata["gc.routed_to"] = routedTo
+	}
+	return nil
+}
+
+func startGraphWorkflow(result *molecule.Result, sourceBeadID string, a config.Agent, method string, deps slingDeps) int {
+	rootID := result.RootID
+	if sourceBeadID != "" {
+		if err := deps.Store.SetMetadata(sourceBeadID, "workflow_id", rootID); err != nil {
+			fmt.Fprintf(deps.Stderr, "gc sling: setting workflow_id on %s: %v\n", sourceBeadID, err) //nolint:errcheck // best-effort
+			return 1
+		}
+	}
+	_ = slingPokeController(deps.CityPath)
+
+	telemetry.RecordSling(context.Background(), a.QualifiedName(), targetType(&a), method, nil)
+	return 0
 }
 
 // targetType returns "pool" or "agent" for telemetry attributes.
@@ -1433,9 +1551,10 @@ func isCustomSlingQuery(a config.Agent) bool {
 	return a.SlingQuery != ""
 }
 
-// looksLikeBeadID reports whether s matches the bead ID pattern: one or more
-// ASCII letters, a dash, one or more alphanumeric chars (e.g. "BL-42", "mp-1j1").
-// bd uses base36 hashes so suffixes contain both letters and digits.
+// looksLikeBeadID reports whether s matches the bead ID pattern: an
+// alphabetic-led alphanumeric prefix, a dash, and a short base36-like
+// suffix (e.g. "BL-42", "mp-1j1", "g6-53b"). Real bd prefixes can include
+// digits after the first character, so the prefix matcher must allow that.
 // Strings with spaces or multiple dashes (like "code-review" or "hello-world")
 // are treated as inline text for ad-hoc bead creation.
 func looksLikeBeadID(s string) bool {
@@ -1450,8 +1569,15 @@ func looksLikeBeadID(s string) bool {
 	if strings.Count(s, "-") != 1 {
 		return false
 	}
-	for _, c := range s[:i] {
-		if ('A' > c || c > 'Z') && ('a' > c || c > 'z') {
+	prefix := s[:i]
+	for idx, c := range prefix {
+		if idx == 0 {
+			if ('A' > c || c > 'Z') && ('a' > c || c > 'z') {
+				return false
+			}
+			continue
+		}
+		if ('0' > c || c > '9') && ('a' > c || c > 'z') && ('A' > c || c > 'Z') {
 			return false
 		}
 	}

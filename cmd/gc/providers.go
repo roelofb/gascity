@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -23,6 +25,7 @@ import (
 	sessionk8s "github.com/gastownhall/gascity/internal/runtime/k8s"
 	sessionsubprocess "github.com/gastownhall/gascity/internal/runtime/subprocess"
 	sessiontmux "github.com/gastownhall/gascity/internal/runtime/tmux"
+	"github.com/gastownhall/gascity/internal/supervisor"
 )
 
 // sessionProviderName returns the session provider name.
@@ -59,8 +62,17 @@ func tmuxConfigFromSession(sc config.SessionConfig, cityName string) sessiontmux
 	}
 }
 
+func providerStateDir(providerName, cityPath string) string {
+	if cityPath == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(cityPath)))
+	return filepath.Join(supervisor.RuntimeDir(), providerName, hex.EncodeToString(sum[:4]))
+}
+
 // newSessionProviderByName constructs a runtime.Provider from a provider name.
 // cityName is used to auto-default the tmux socket when none is configured.
+// cityPath is used to isolate socket-based providers per city.
 // Returns error instead of os.Exit, making it safe for the hot-reload path.
 //
 //   - "fake" → in-memory fake (all ops succeed)
@@ -70,7 +82,7 @@ func tmuxConfigFromSession(sc config.SessionConfig, cityName string) sessiontmux
 //   - "exec:<script>" → user-supplied script (absolute path or PATH lookup)
 //   - "k8s" → native Kubernetes provider (client-go)
 //   - default → real tmux provider
-func newSessionProviderByName(name string, sc config.SessionConfig, cityName string) (runtime.Provider, error) {
+func newSessionProviderByName(name string, sc config.SessionConfig, cityName, cityPath string) (runtime.Provider, error) {
 	if strings.HasPrefix(name, "exec:") {
 		return sessionexec.NewProvider(strings.TrimPrefix(name, "exec:")), nil
 	}
@@ -80,13 +92,20 @@ func newSessionProviderByName(name string, sc config.SessionConfig, cityName str
 	case "fail":
 		return runtime.NewFailFake(), nil
 	case "subprocess":
+		if cityPath != "" {
+			return sessionsubprocess.NewProviderWithDir(providerStateDir("subprocess", cityPath)), nil
+		}
 		return sessionsubprocess.NewProvider(), nil
 	case "acp":
-		return sessionacp.NewProvider(sessionacp.Config{
+		cfg := sessionacp.Config{
 			HandshakeTimeout:  sc.ACP.HandshakeTimeoutDuration(),
 			NudgeBusyTimeout:  sc.ACP.NudgeBusyTimeoutDuration(),
 			OutputBufferLines: sc.ACP.OutputBufferLinesOrDefault(),
-		}), nil
+		}
+		if cityPath != "" {
+			return sessionacp.NewProviderWithDir(providerStateDir("acp", cityPath), cfg), nil
+		}
+		return sessionacp.NewProvider(cfg), nil
 	case "k8s":
 		return sessionk8s.NewProvider()
 	case "hybrid":
@@ -119,7 +138,7 @@ func newSessionProvider() runtime.Provider {
 		}
 	}
 	provName := sessionProviderName()
-	sp, err := newSessionProviderByName(provName, sc, cityName)
+	sp, err := newSessionProviderByName(provName, sc, cityName, cityPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err) //nolint:errcheck // best-effort stderr
 		os.Exit(1)
@@ -129,7 +148,7 @@ func newSessionProvider() runtime.Provider {
 	// NOTE: agents comes from loadCityConfig which applies pack overrides,
 	// so the Session field from overrides is already resolved here.
 	if provName != "acp" && hasACPAgents(agents) {
-		acpSP, acpErr := newSessionProviderByName("acp", sc, cityName)
+		acpSP, acpErr := newSessionProviderByName("acp", sc, cityName, cityPath)
 		if acpErr != nil {
 			fmt.Fprintf(os.Stderr, "acp provider: %v\n", acpErr) //nolint:errcheck // best-effort stderr
 			os.Exit(1)

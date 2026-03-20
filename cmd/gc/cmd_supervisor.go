@@ -791,7 +791,7 @@ func reconcileCities(
 		}
 
 		sp, spErr := newSessionProviderByName(
-			effectiveProviderName(cfg.Session.Provider), cfg.Session, cityName)
+			effectiveProviderName(cfg.Session.Provider), cfg.Session, cityName, path)
 		if spErr != nil {
 			func() {
 				mu.Lock()

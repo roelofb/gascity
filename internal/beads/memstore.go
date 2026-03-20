@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -80,6 +81,22 @@ func (m *MemStore) Create(b Bead) (Bead, error) {
 
 	stored := cloneBead(b)
 	m.beads = append(m.beads, stored)
+	for _, need := range stored.Needs {
+		depType := "blocks"
+		dependsOnID := need
+		if strings.Contains(need, ":") {
+			parts := strings.SplitN(need, ":", 2)
+			if parts[0] != "" && parts[1] != "" {
+				depType = parts[0]
+				dependsOnID = parts[1]
+			}
+		}
+		m.deps = append(m.deps, Dep{
+			IssueID:     stored.ID,
+			DependsOnID: dependsOnID,
+			Type:        depType,
+		})
+	}
 	return cloneBead(stored), nil
 }
 

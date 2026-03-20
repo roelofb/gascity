@@ -34,7 +34,10 @@ func ExecCommandRunner() CommandRunner {
 func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 	return func(dir, name string, args ...string) ([]byte, error) {
 		start := time.Now()
-		cmd := exec.Command(name, args...)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.WaitDelay = 2 * time.Second
 		cmd.Dir = dir
 		if len(env) > 0 {
 			cmd.Env = mergeEnv(os.Environ(), env)
@@ -46,6 +49,13 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 			telemetry.RecordBDCall(context.Background(),
 				args, float64(time.Since(start).Milliseconds()),
 				err, out, stderr.String())
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			timeoutErr := fmt.Errorf("timed out after 30s")
+			if stderr.Len() > 0 {
+				return out, fmt.Errorf("%w: %s", timeoutErr, stderr.String())
+			}
+			return out, timeoutErr
 		}
 		if err != nil && stderr.Len() > 0 {
 			return out, fmt.Errorf("%w: %s", err, stderr.String())
@@ -360,6 +370,9 @@ func (s *BdStore) Create(b Bead) (Bead, error) {
 	if b.Assignee != "" {
 		args = append(args, "--assignee", b.Assignee)
 	}
+	if len(b.Needs) > 0 {
+		args = append(args, "--deps", strings.Join(b.Needs, ","))
+	}
 	for _, l := range b.Labels {
 		args = append(args, "--labels", l)
 	}
@@ -474,10 +487,21 @@ func (s *BdStore) SetMetadata(id, key, value string) error {
 // sequential bd update calls. Note: not truly atomic for external stores,
 // but each individual call is idempotent.
 func (s *BdStore) SetMetadataBatch(id string, kvs map[string]string) error {
-	for k, v := range kvs {
-		if err := s.SetMetadata(id, k, v); err != nil {
-			return err
-		}
+	if len(kvs) == 0 {
+		return nil
+	}
+	args := []string{"update", "--json", id}
+	keys := make([]string, 0, len(kvs))
+	for k := range kvs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--set-metadata", k+"="+kvs[k])
+	}
+	_, err := s.runner(s.dir, "bd", args...)
+	if err != nil {
+		return fmt.Errorf("setting metadata on %q: %w", id, err)
 	}
 	return nil
 }
@@ -544,6 +568,32 @@ func (s *BdStore) ListByLabel(label string, limit int) ([]Bead, error) {
 // status via bd list --assignee --status. Limit controls max results (0 = unlimited).
 func (s *BdStore) ListByAssignee(assignee, status string, limit int) ([]Bead, error) {
 	args := []string{"list", "--json", "--assignee=" + assignee, "--status=" + status, "--limit", fmt.Sprintf("%d", limit)}
+	out, err := s.runner(s.dir, "bd", args...)
+	if err != nil {
+		return nil, fmt.Errorf("bd list: %w", err)
+	}
+	issues := parseIssuesTolerant(extractJSON(out))
+	result := make([]Bead, len(issues))
+	for i := range issues {
+		result[i] = issues[i].toBead()
+	}
+	return result, nil
+}
+
+// ListByMetadata returns beads matching all given metadata key=value filters.
+// Limit controls max results (0 = unlimited). Results use bd's default order.
+func (s *BdStore) ListByMetadata(filters map[string]string, limit int) ([]Bead, error) {
+	args := []string{"list", "--json", "--all", "--limit", fmt.Sprintf("%d", limit)}
+	if len(filters) > 0 {
+		keys := make([]string, 0, len(filters))
+		for k := range filters {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, "--metadata-field", k+"="+filters[k])
+		}
+	}
 	out, err := s.runner(s.dir, "bd", args...)
 	if err != nil {
 		return nil, fmt.Errorf("bd list: %w", err)

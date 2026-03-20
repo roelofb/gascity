@@ -130,11 +130,23 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 		"GC_CITY_PATH":        p.cityPath,
 		"GC_CITY_RUNTIME_DIR": citylayout.RuntimeDataDir(p.cityPath),
 		"GC_DIR":              workDir,
-		// GT_ROOT is always the city root. bd formula discovery falls
-		// back to $GT_ROOT/.beads/formulas when agents run outside the
-		// city/rig repo roots. Rig-scoped agents use GC_RIG_ROOT for
-		// rig-specific paths; GT_ROOT stays city-level.
+		// Explicit empty values matter here. tmux session creation uses `env -u`
+		// only for keys present with empty strings, which prevents stale rig
+		// scope from leaking out of the tmux server's inherited environment.
+		"GC_RIG":      "",
+		"GC_RIG_ROOT": "",
+		"BEADS_DIR":   "",
+		// GT_ROOT stays city-scoped by default. bd formula discovery falls back
+		// to $GT_ROOT/.beads/formulas when agents run outside the city/rig repo
+		// roots (for example under .gc/agents/... or .gc/worktrees/...).
+		// Rig-scoped agents override the rig-specific keys below.
 		"GT_ROOT": p.cityPath,
+	}
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		agentEnv["GC_BIN"] = exe
+	}
+	if port := currentDoltPort(p.cityPath); port != "" {
+		agentEnv["GC_DOLT_PORT"] = port
 	}
 	if rigName != "" {
 		agentEnv["GC_RIG"] = rigName

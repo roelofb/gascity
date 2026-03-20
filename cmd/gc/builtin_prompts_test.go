@@ -14,10 +14,11 @@ func TestMaterializeBuiltinPrompts(t *testing.T) {
 		t.Fatalf("materializeBuiltinPrompts: %v", err)
 	}
 
-	// All 8 embedded prompts should exist.
+	// All embedded prompts should exist.
 	want := []string{
 		"foreman.md", "loop-mail.md", "loop.md", "mayor.md",
 		"one-shot.md", "pool-worker.md", "scoped-worker.md", "worker.md",
+		"graph-worker.md",
 	}
 	promptsDir := filepath.Join(dir, citylayout.PromptsRoot)
 	for _, name := range want {

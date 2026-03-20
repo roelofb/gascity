@@ -41,6 +41,10 @@ type Result struct {
 	// RootID is the store-assigned ID of the root bead.
 	RootID string
 
+	// GraphWorkflow reports whether the instantiated recipe root is a graph-first
+	// workflow head instead of a legacy molecule root.
+	GraphWorkflow bool
+
 	// IDMapping maps recipe step IDs to store-assigned bead IDs.
 	IDMapping map[string]string
 
@@ -90,6 +94,9 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 	// Build the list of beads to create.
 	idMapping := make(map[string]string, len(recipe.Steps))
 	var createdIDs []string
+	embeddedDeps := make(map[string]bool)
+	pendingAssignees := make(map[string]string)
+	graphWorkflow := len(recipe.Steps) > 0 && recipe.Steps[0].Metadata["gc.kind"] == "workflow"
 
 	for i, step := range recipe.Steps {
 		// For RootOnly recipes, only create the root bead.
@@ -98,7 +105,23 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 		}
 
 		b := stepToBead(step, vars)
-
+		hasFutureBlocker := false
+		for _, dep := range recipe.Deps {
+			if dep.StepID != step.ID || dep.Type == "parent-child" {
+				continue
+			}
+			dependsOnBeadID, ok := idMapping[dep.DependsOnID]
+			if !ok || dependsOnBeadID == "" {
+				hasFutureBlocker = true
+				continue
+			}
+			if dep.Type == "blocks" {
+				b.Needs = append(b.Needs, dependsOnBeadID)
+			} else {
+				b.Needs = append(b.Needs, dep.Type+":"+dependsOnBeadID)
+			}
+			embeddedDeps[dep.StepID+"|"+dep.DependsOnID+"|"+dep.Type] = true
+		}
 		// Root bead overrides.
 		if step.IsRoot {
 			if step.Metadata["gc.kind"] != "workflow" {
@@ -108,7 +131,7 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 			if opts.Title != "" {
 				b.Title = opts.Title
 			}
-			if opts.ParentID != "" {
+			if opts.ParentID != "" && step.Metadata["gc.kind"] != "workflow" {
 				b.ParentID = opts.ParentID
 			}
 			if opts.IdempotencyKey != "" {
@@ -129,12 +152,15 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 			}
 			// Set Ref to the step ID suffix (after the formula name prefix).
 			b.Ref = step.ID
+			if b.Metadata == nil {
+				b.Metadata = make(map[string]string, 1)
+			}
+			if b.Metadata["gc.step_ref"] == "" {
+				b.Metadata["gc.step_ref"] = step.ID
+			}
 
-			if step.Metadata["gc.kind"] != "" {
+			if graphWorkflow || step.Metadata["gc.kind"] != "" {
 				if rootBeadID, ok := idMapping[recipe.Steps[0].ID]; ok && rootBeadID != "" {
-					if b.Metadata == nil {
-						b.Metadata = make(map[string]string, 1)
-					}
 					b.Metadata["gc.root_bead_id"] = rootBeadID
 				}
 			}
@@ -149,6 +175,14 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 					b.Metadata["gc.logical_bead_id"] = logicalBeadID
 				}
 			}
+
+			// Graph-first workflows must not expose partially wired steps to
+			// live workers. Create non-root beads unassigned, wire the full graph,
+			// then assign them in a final pass.
+			if graphWorkflow && b.Assignee != "" && hasFutureBlocker {
+				pendingAssignees[step.ID] = b.Assignee
+				b.Assignee = ""
+			}
 		}
 
 		created, err := store.Create(b)
@@ -160,6 +194,7 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 
 		idMapping[step.ID] = created.ID
 		createdIDs = append(createdIDs, created.ID)
+
 	}
 
 	// Wire dependencies using the IDMapping.
@@ -174,9 +209,28 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 			if dep.Type == "parent-child" {
 				continue
 			}
+			if embeddedDeps[dep.StepID+"|"+dep.DependsOnID+"|"+dep.Type] {
+				continue
+			}
 			if err := store.DepAdd(fromID, toID, dep.Type); err != nil {
 				markFailed(store, createdIDs)
 				return nil, fmt.Errorf("wiring dep %s->%s: %w", dep.StepID, dep.DependsOnID, err)
+			}
+		}
+	}
+
+	if graphWorkflow {
+		for stepID, assignee := range pendingAssignees {
+			if assignee == "" {
+				continue
+			}
+			beadID, ok := idMapping[stepID]
+			if !ok || beadID == "" {
+				continue
+			}
+			if err := store.Update(beadID, beads.UpdateOpts{Assignee: &assignee}); err != nil {
+				markFailed(store, createdIDs)
+				return nil, fmt.Errorf("assigning graph step %q: %w", stepID, err)
 			}
 		}
 	}
@@ -187,9 +241,10 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 	}
 
 	return &Result{
-		RootID:    rootID,
-		IDMapping: idMapping,
-		Created:   len(createdIDs),
+		RootID:        rootID,
+		GraphWorkflow: graphWorkflow,
+		IDMapping:     idMapping,
+		Created:       len(createdIDs),
 	}, nil
 }
 

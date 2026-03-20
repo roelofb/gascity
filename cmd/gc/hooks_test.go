@@ -50,8 +50,11 @@ func TestInstallBeadHooksCreatesScripts(t *testing.T) {
 				t.Errorf("hook %s missing event type %q:\n%s", tc.filename, tc.eventType, content)
 			}
 			// Contains gc event emit.
-			if !strings.Contains(content, "gc event emit") {
-				t.Errorf("hook %s missing 'gc event emit':\n%s", tc.filename, content)
+			if !strings.Contains(content, `GC_BIN="${GC_BIN:-gc}"`) {
+				t.Errorf("hook %s missing GC_BIN fallback:\n%s", tc.filename, content)
+			}
+			if !strings.Contains(content, `"$GC_BIN" event emit`) {
+				t.Errorf("hook %s missing '\"$GC_BIN\" event emit':\n%s", tc.filename, content)
 			}
 			// Best-effort: stderr redirected, || true.
 			if !strings.Contains(content, "|| true") {
@@ -59,11 +62,11 @@ func TestInstallBeadHooksCreatesScripts(t *testing.T) {
 			}
 			// on_close hook must also trigger convoy autoclose and wisp autoclose.
 			if tc.filename == "on_close" {
-				if !strings.Contains(content, "gc convoy autoclose") {
-					t.Errorf("on_close hook missing 'gc convoy autoclose':\n%s", content)
+				if !strings.Contains(content, `"$GC_BIN" convoy autoclose`) {
+					t.Errorf("on_close hook missing '\"$GC_BIN\" convoy autoclose':\n%s", content)
 				}
-				if !strings.Contains(content, "gc wisp autoclose") {
-					t.Errorf("on_close hook missing 'gc wisp autoclose':\n%s", content)
+				if !strings.Contains(content, `"$GC_BIN" wisp autoclose`) {
+					t.Errorf("on_close hook missing '\"$GC_BIN\" wisp autoclose':\n%s", content)
 				}
 			}
 		})

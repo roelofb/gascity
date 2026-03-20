@@ -425,8 +425,8 @@ func TestComputeWorkSet_RunsWorkQuery(t *testing.T) {
 
 	runner := func(command, _ string) (string, error) {
 		// worker's default work_query uses $GC_SESSION_NAME env var.
-		if command == "bd ready --assignee=$GC_SESSION_NAME" {
-			return "BL-42\n", nil
+		if strings.Contains(command, `"$GC_SESSION_NAME"`) {
+			return `[{"id":"BL-42"}]`, nil
 		}
 		return "", nil // empty = no work for idle's custom query
 	}
