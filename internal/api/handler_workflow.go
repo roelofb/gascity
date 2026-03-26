@@ -981,7 +981,7 @@ func workflowKind(bead beads.Bead) string {
 }
 
 func workflowStatus(bead beads.Bead) string {
-	hasAssignment := strings.TrimSpace(bead.Assignee) != "" || strings.TrimSpace(bead.Metadata["gc.routed_to"]) != ""
+	hasAssignment := strings.TrimSpace(bead.Assignee) != ""
 	switch strings.TrimSpace(bead.Status) {
 	case "closed":
 		if strings.TrimSpace(bead.Metadata["gc.outcome"]) == "fail" {
@@ -1005,17 +1005,13 @@ func workflowStatus(bead beads.Bead) string {
 
 func sessionLinkFor(bead beads.Bead, sessionIndex map[string]workflowSessionRef) *sessionLinkResponse {
 	sessionName := strings.TrimSpace(bead.Assignee)
-	assignee := strings.TrimSpace(bead.Metadata["gc.routed_to"])
-	if assignee == "" {
-		assignee = sessionName
-	}
-	if sessionName == "" && assignee == "" {
+	if sessionName == "" {
 		return nil
 	}
 
 	sessionID := sessionName
 	projectID := "city"
-	for _, key := range []string{sessionName, assignee} {
+	for _, key := range []string{sessionName} {
 		if key == "" {
 			continue
 		}
@@ -1032,9 +1028,6 @@ func sessionLinkFor(bead beads.Bead, sessionIndex map[string]workflowSessionRef)
 		}
 		break
 	}
-	if sessionName == "" {
-		sessionName = assignee
-	}
 	if sessionID == "" {
 		sessionID = sessionName
 	}
@@ -1043,7 +1036,7 @@ func sessionLinkFor(bead beads.Bead, sessionIndex map[string]workflowSessionRef)
 		ProjectID:   projectID,
 		SessionID:   sessionID,
 		SessionName: sessionName,
-		Assignee:    assignee,
+		Assignee:    strings.TrimSpace(bead.Assignee),
 	}
 }
 

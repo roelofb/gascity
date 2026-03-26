@@ -192,8 +192,8 @@ func TestWorkflowGetBuildsSnapshot(t *testing.T) {
 	if logicalNode.SessionLink.SessionName != "alpha--mayor" {
 		t.Fatalf("logical session_link.session_name = %q, want alpha--mayor", logicalNode.SessionLink.SessionName)
 	}
-	if logicalNode.SessionLink.Assignee != "alpha/mayor" {
-		t.Fatalf("logical session_link.assignee = %q, want alpha/mayor", logicalNode.SessionLink.Assignee)
+	if logicalNode.SessionLink.Assignee != "alpha--mayor" {
+		t.Fatalf("logical session_link.assignee = %q, want alpha--mayor", logicalNode.SessionLink.Assignee)
 	}
 
 	scopeGroup := findScopeGroup(snapshot.ScopeGroups, "demo.body")
@@ -971,6 +971,21 @@ func TestWorkflowStatusRequiresAssignmentForActive(t *testing.T) {
 
 	if got := workflowStatus(bead); got != "pending" {
 		t.Fatalf("workflowStatus(in_progress unassigned) = %q, want pending", got)
+	}
+}
+
+func TestWorkflowStatusDoesNotTreatRoutedOnlyWorkAsActive(t *testing.T) {
+	t.Parallel()
+
+	bead := beads.Bead{
+		Status: "in_progress",
+		Metadata: map[string]string{
+			"gc.routed_to": "mayor",
+		},
+	}
+
+	if got := workflowStatus(bead); got != "pending" {
+		t.Fatalf("workflowStatus(in_progress routed-only) = %q, want pending", got)
 	}
 }
 
