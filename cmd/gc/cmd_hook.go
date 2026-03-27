@@ -40,7 +40,10 @@ The agent is determined from $GC_AGENT or a positional argument.`,
 // $GC_AGENT or a positional argument, loads the city config, and runs
 // the agent's work query.
 func cmdHook(args []string, inject bool, stdout, stderr io.Writer) int {
-	agentName := os.Getenv("GC_AGENT")
+	agentName := os.Getenv("GC_ALIAS")
+	if agentName == "" {
+		agentName = os.Getenv("GC_AGENT")
+	}
 	if len(args) > 0 {
 		agentName = args[0]
 	}
