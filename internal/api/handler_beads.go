@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -381,8 +380,8 @@ func (s *Server) findStore(rig string) beads.Store {
 // back to the legacy store scan order.
 func (s *Server) beadStoresForID(id string) []beads.Store {
 	if prefix := beadPrefix(strings.TrimSpace(id)); prefix != "" {
-		if candidate, ok := workflowSQLRouteCandidate(s.state, prefix); ok && candidate.info.store != nil {
-			return []beads.Store{candidate.info.store}
+		if store := s.resolveStoreByPrefix(prefix); store != nil {
+			return []beads.Store{store}
 		}
 	}
 
@@ -393,6 +392,59 @@ func (s *Server) beadStoresForID(id string) []beads.Store {
 		candidates = append(candidates, stores[rigName])
 	}
 	return candidates
+}
+
+// resolveStoreByPrefix finds the rig store that owns a bead prefix
+// by checking each rig's routes.jsonl file and mapping the resolved
+// store path back to the correct rig.
+func (s *Server) resolveStoreByPrefix(prefix string) beads.Store {
+	cfg := s.state.Config()
+	if cfg == nil {
+		return nil
+	}
+	stores := s.state.BeadStores()
+	cityPath := strings.TrimSpace(s.state.CityPath())
+
+	// Build rig path → name map for reverse lookup.
+	rigPathToName := make(map[string]string, len(cfg.Rigs))
+	for _, rig := range cfg.Rigs {
+		rp := strings.TrimSpace(rig.Path)
+		if rp == "" {
+			continue
+		}
+		if !filepath.IsAbs(rp) && cityPath != "" {
+			rp = filepath.Join(cityPath, rp)
+		}
+		rigPathToName[filepath.Clean(rp)] = rig.Name
+	}
+
+	// Search routes.jsonl in each rig's .beads/ directory.
+	for _, rig := range cfg.Rigs {
+		rigPath := strings.TrimSpace(rig.Path)
+		if rigPath == "" {
+			continue
+		}
+		if !filepath.IsAbs(rigPath) && cityPath != "" {
+			rigPath = filepath.Join(cityPath, rigPath)
+		}
+		storePath, ok := resolveRoutePrefix(rigPath, prefix)
+		if !ok {
+			continue
+		}
+		// The resolved store path might point to a different rig
+		// (e.g., prefix "gb" in alpha's routes maps to ../beta).
+		cleanPath := filepath.Clean(storePath)
+		if rigName, found := rigPathToName[cleanPath]; found {
+			if store, exists := stores[rigName]; exists {
+				return store
+			}
+		}
+		// Fallback: the route pointed to the same rig.
+		if store, exists := stores[rig.Name]; exists {
+			return store
+		}
+	}
+	return nil
 }
 
 // sortedRigNames returns rig names from the store map in deterministic sorted order,
@@ -434,13 +486,6 @@ func (s *Server) handleBeadGraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fast path: try direct SQL for each rig with a dolt connection.
-	if snap, err := s.tryGraphSQL(rootID); err == nil {
-		writeIndexJSON(w, s.latestIndex(), snap)
-		return
-	}
-
-	// Slow path: bd subprocess.
 	stores := s.state.BeadStores()
 
 	// Find root bead by scanning stores (bd handles prefix routing via routes.jsonl)
@@ -494,36 +539,6 @@ func (s *Server) handleBeadGraph(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// tryGraphSQL attempts direct SQL for the graph endpoint by resolving the
-// root bead prefix through routes.jsonl and querying only that store.
-func (s *Server) tryGraphSQL(rootID string) (*beadGraphResponseJSON, error) {
-	prefix := beadPrefix(rootID)
-	if prefix == "" {
-		return nil, fmt.Errorf("no prefix in bead ID %q", rootID)
-	}
-	candidate, ok := workflowSQLRouteCandidate(s.state, prefix)
-	if !ok {
-		return nil, fmt.Errorf("sql fast path unavailable for prefix %q", prefix)
-	}
-	port, database, err := resolveDoltConnection(candidate.path)
-	if err != nil {
-		return nil, err
-	}
-	if _, ok, err := workflowSQLGetBead("127.0.0.1", port, database, rootID); err != nil {
-		return nil, err
-	} else if !ok {
-		return nil, fmt.Errorf("root %q not found in routed store", rootID)
-	}
-	graphBeads, beadIndex, depMap, err := workflowSQLSnapshot("127.0.0.1", port, database, rootID)
-	if err != nil {
-		return nil, err
-	}
-	if len(graphBeads) == 0 {
-		return nil, fmt.Errorf("no graph beads found for root %q", rootID)
-	}
-	return buildGraphFromSQL(rootID, graphBeads, beadIndex, depMap), nil
-}
-
 // beadPrefix extracts the alphabetic prefix from a bead ID (e.g., "ga" from "ga-5b8i").
 func beadPrefix(id string) string {
 	for i, c := range id {
@@ -565,17 +580,6 @@ func resolveRoutePrefix(rigPath, prefix string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func buildGraphFromSQL(rootID string, graphBeads []beads.Bead, beadIndex map[string]beads.Bead, depMap map[string][]beads.Dep) *beadGraphResponseJSON {
-	root := beadIndex[rootID]
-	store := &prefetchedDepStore{deps: depMap}
-	deps, _ := collectWorkflowDeps(store, beadIndex)
-	return &beadGraphResponseJSON{
-		Root:  root,
-		Beads: graphBeads,
-		Deps:  deps,
-	}
 }
 
 // decodeBody decodes JSON request body into v.
