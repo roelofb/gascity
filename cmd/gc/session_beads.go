@@ -53,7 +53,16 @@ func canRebindConfiguredNamedSession(b beads.Bead, identity string) bool {
 	if identity == "" || isNamedSessionBead(b) {
 		return false
 	}
-	return strings.TrimSpace(b.Metadata[namedSessionIdentityMetadata]) == identity
+	// Allow rebind if the bead was previously tagged with this identity.
+	if strings.TrimSpace(b.Metadata[namedSessionIdentityMetadata]) == identity {
+		return true
+	}
+	// Also allow rebind for pre-existing beads whose session_name or alias
+	// matches the named session identity (adoption of beads created before
+	// the named session config was added).
+	sn := strings.TrimSpace(b.Metadata["session_name"])
+	alias := strings.TrimSpace(b.Metadata["alias"])
+	return sn == identity || alias == identity
 }
 
 // syncSessionBeads ensures every desired session has a corresponding session
