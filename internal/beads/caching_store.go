@@ -47,6 +47,7 @@ type cacheState int
 
 const (
 	cacheUninitialized cacheState = iota
+	cachePartial                  // PrimeLabel loaded a subset; ListByLabel hits cache, List() waits for full Prime
 	cacheLive
 	cacheDegraded
 )
@@ -96,6 +97,34 @@ func newCachingStore(backing Store, onChange func(eventType, beadID string, payl
 		onChange:   onChange,
 		primeReady: make(chan struct{}),
 	}
+}
+
+// PrimeActive loads all non-closed beads (open + in_progress) into the
+// cache. These are fast indexed queries (~1-2s total) that populate
+// enough data for the startup path (adoption, session snapshot, desired
+// state) without waiting for the full Prime. The cache enters
+// cachePartial state: ListByLabel and Get hit cache for primed beads,
+// List() still waits for full Prime to backfill closed/historical beads.
+func (c *CachingStore) PrimeActive() error {
+	var all []Bead
+	for _, status := range []string{"open", "in_progress"} {
+		beads, err := c.backing.List(status)
+		if err != nil {
+			return fmt.Errorf("prime active (%s): %w", status, err)
+		}
+		all = append(all, beads...)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, b := range all {
+		c.beads[b.ID] = cloneBead(b)
+	}
+	if c.state == cacheUninitialized {
+		c.state = cachePartial
+	}
+	log.Printf("caching-store: pre-primed %d active beads", len(all))
+	return nil
 }
 
 // Prime loads all beads and deps from the backing store into memory.
@@ -327,13 +356,19 @@ func (c *CachingStore) List(status ...string) ([]Bead, error) {
 // Get returns a single bead by ID from the cache or backing store.
 func (c *CachingStore) Get(id string) (Bead, error) {
 	c.mu.RLock()
-	if c.state == cacheLive {
+	if c.state == cacheLive || c.state == cachePartial {
 		if b, ok := c.beads[id]; ok {
 			c.mu.RUnlock()
 			return cloneBead(b), nil
 		}
+		if c.state == cacheLive {
+			// Fully primed — bead doesn't exist.
+			c.mu.RUnlock()
+			return Bead{}, fmt.Errorf("getting bead %q: %w", id, ErrNotFound)
+		}
+		// Partial — bead might exist but wasn't in the primed label set.
 		c.mu.RUnlock()
-		return Bead{}, fmt.Errorf("getting bead %q: %w", id, ErrNotFound)
+		return c.backing.Get(id)
 	}
 	c.mu.RUnlock()
 	return c.backing.Get(id)
@@ -397,7 +432,7 @@ func (c *CachingStore) Children(parentID string) ([]Bead, error) {
 // ListByLabel returns beads matching the given label.
 func (c *CachingStore) ListByLabel(label string, limit int) ([]Bead, error) {
 	c.mu.RLock()
-	if c.state == cacheLive {
+	if c.state == cacheLive || c.state == cachePartial {
 		var result []Bead
 		for _, b := range c.beads {
 			for _, l := range b.Labels {

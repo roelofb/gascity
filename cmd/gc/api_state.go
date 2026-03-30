@@ -99,8 +99,15 @@ func wrapWithCachingStore(store beads.Store, ep events.Provider) beads.Store {
 		}
 	}
 	cs := beads.NewCachingStore(bdStore, onChange)
-	// Prime asynchronously — reads fall through to backing store until
-	// the cache is live. This avoids blocking city startup.
+	// Pre-prime active beads synchronously (~1-2s, indexed queries).
+	// Loads open + in_progress beads — enough for the startup path
+	// (adoption, session snapshot, desired state) so the city can
+	// reach "ready" without waiting for the full prime.
+	if err := cs.PrimeActive(); err != nil {
+		log.Printf("caching-store: pre-prime failed: %v", err)
+	}
+	// Full prime runs async — backfills remaining beads for List()
+	// callers (convergence reconcile, sweep, API handlers).
 	go func() {
 		log.Printf("caching-store: priming ...")
 		if err := cs.Prime(context.Background()); err != nil {
