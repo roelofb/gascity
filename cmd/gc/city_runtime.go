@@ -226,7 +226,6 @@ func (cr *CityRuntime) run(ctx context.Context) {
 	telemetry.RecordBeadStoreHealth(context.Background(), cr.cityName, cr.cityBeadStore() != nil)
 
 	// Initialize bead-driven drain tracker when bead store is available.
-	fmt.Fprintf(cr.stderr, "DEBUG drain-tracker: cityBeadStore=%v tomlPath=%q\n", cr.cityBeadStore() != nil, cr.tomlPath) //nolint:errcheck
 	if cr.cityBeadStore() != nil && cr.tomlPath != "" {
 		cr.sessionDrains = newDrainTracker()
 	}
@@ -581,7 +580,6 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 	if sessionBeads == nil {
 		sessionBeads = cr.loadSessionBeadSnapshot()
 	}
-	fmt.Fprintf(cr.stderr, "DEBUG beadReconcileTick: entering, sessions=%d desired=%d\n", len(sessionBeads.Open()), len(desiredState)) //nolint:errcheck
 	allBeads, err := store.List()
 	if err != nil {
 		fmt.Fprintf(cr.stderr, "%s: listing work beads: %v\n", cr.logPrefix, err) //nolint:errcheck

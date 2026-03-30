@@ -5,8 +5,6 @@
 package main
 
 import (
-	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -120,9 +118,6 @@ func sessionWithinDesiredConfig(session beads.Bead, cfg *config.City, poolDesire
 	template := normalizedSessionTemplate(session, cfg)
 	agent := findAgentByTemplate(cfg, template)
 	if agent == nil {
-		if session.Metadata["template"] == "workflow-control" || strings.Contains(session.Metadata["template"], "workflow-control") {
-			fmt.Fprintf(os.Stderr, "DEBUG sessionWithinDesiredConfig: %s template=%q normalizedTemplate=%q → agent=nil (agents=%d)\n", session.ID, session.Metadata["template"], template, len(cfg.Agents)) //nolint:errcheck
-		}
 		return nil, false
 	}
 	if isDrainedSessionBead(session) {

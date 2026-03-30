@@ -420,9 +420,6 @@ func reconcileSessionBeads(
 		}
 		persistSleepPolicyMetadata(target.session, store, eval.Policy, eval.ConfigSuppressed)
 		shouldWake := len(eval.Reasons) > 0
-		if target.session.Metadata["template"] == "workflow-control" || target.session.Metadata["template"] == "gascity/workflow-control" {
-			fmt.Fprintf(stderr, "DEBUG wake-eval %s: reasons=%v shouldWake=%v alive=%v quarantined=%v\n", target.session.ID, eval.Reasons, shouldWake, target.alive, sessionIsQuarantined(*target.session, clk)) //nolint:errcheck
-		}
 
 		if shouldWake && !target.alive {
 			// Session should be awake but isn't — wake it.
