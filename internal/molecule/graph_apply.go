@@ -176,6 +176,22 @@ func buildRecipeApplyPlan(recipe *formula.Recipe, opts Options) (*beads.GraphApp
 		}
 	}
 
+	// Connect non-root steps to the root via a "belongs-to" dependency so that
+	// bd delete --cascade from the root discovers all workflow beads through
+	// the dependency graph (not just via gc.root_bead_id metadata).
+	if graphWorkflow && rootKey != "" {
+		for _, node := range plan.Nodes {
+			if node.Key == rootKey {
+				continue
+			}
+			plan.Edges = append(plan.Edges, beads.GraphApplyEdge{
+				FromKey: node.Key,
+				ToKey:   rootKey,
+				Type:    "belongs-to",
+			})
+		}
+	}
+
 	return plan, graphWorkflow, rootKey, nil
 }
 
@@ -267,6 +283,18 @@ func buildFragmentApplyPlan(store beads.Store, recipe *formula.FragmentRecipe, o
 		})
 		if dep.Type == "parent-child" {
 			setNodeParentRef(plan.Nodes, dep.StepID, dep.DependsOnID, "")
+		}
+	}
+
+	// Connect fragment steps to the root via belongs-to so cascade deletion
+	// from the root discovers them through the dependency graph.
+	if opts.RootID != "" {
+		for _, node := range plan.Nodes {
+			plan.Edges = append(plan.Edges, beads.GraphApplyEdge{
+				FromKey: node.Key,
+				ToID:    opts.RootID,
+				Type:    "belongs-to",
+			})
 		}
 	}
 
