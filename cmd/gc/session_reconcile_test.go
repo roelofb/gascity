@@ -350,6 +350,44 @@ func TestWakeReasons_WorkSetEmpty(t *testing.T) {
 	}
 }
 
+func TestWakeReasons_WorkSetEmitsWakeWork(t *testing.T) {
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	clk := &clock.Fake{Time: now}
+
+	cfg := &config.City{}
+
+	session := makeBead("b1", map[string]string{
+		"template":     "worker",
+		"session_name": "test-worker",
+	})
+
+	// workSet includes the template — should produce WakeWork.
+	workSet := map[string]bool{"worker": true}
+	reasons := wakeReasons(session, cfg, nil, nil, workSet, nil, clk)
+	if !containsWakeReason(reasons, WakeWork) {
+		t.Errorf("session with work should get WakeWork, got %v", reasons)
+	}
+}
+
+func TestWakeReasons_WakeWorkSuppressedByWaitHold(t *testing.T) {
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	clk := &clock.Fake{Time: now}
+
+	cfg := &config.City{}
+
+	session := makeBead("b1", map[string]string{
+		"template":     "worker",
+		"session_name": "test-worker",
+		"wait_hold":    "true",
+	})
+
+	workSet := map[string]bool{"worker": true}
+	reasons := wakeReasons(session, cfg, nil, nil, workSet, nil, clk)
+	if containsWakeReason(reasons, WakeWork) {
+		t.Errorf("wait-hold should suppress WakeWork, got %v", reasons)
+	}
+}
+
 func TestWakeReasons_WorkSetHeldSuppressed(t *testing.T) {
 	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
 	clk := &clock.Fake{Time: now}

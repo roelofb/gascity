@@ -1110,6 +1110,18 @@ func instantiateSlingFormula(ctx context.Context, formulaName string, searchPath
 			slingTracef("instantiate decorate-error formula=%s err=%v", formulaName, err)
 			return nil, err
 		}
+	} else if isMultiSessionCfgAgent(&a) {
+		// Non-graph formulas (legacy molecules) don't go through
+		// decorateGraphWorkflowRecipe, so step beads won't inherit
+		// gc.routed_to. Propagate it so the work query and wake
+		// evaluator can find molecule-bearing pool work.
+		routedTo := a.QualifiedName()
+		for i := range recipe.Steps {
+			if recipe.Steps[i].Metadata == nil {
+				recipe.Steps[i].Metadata = make(map[string]string)
+			}
+			recipe.Steps[i].Metadata["gc.routed_to"] = routedTo
+		}
 	}
 	instantiateStart := time.Now()
 	result, err := molecule.Instantiate(ctx, deps.Store, recipe, opts)

@@ -44,7 +44,7 @@ func evaluateWakeReasons(
 	cfg *config.City,
 	sp runtime.Provider,
 	poolDesired map[string]int,
-	_ map[string]bool, // workSet — reserved for future demand-aware wake logic
+	workSet map[string]bool,
 	readyWaitSet map[string]bool,
 	clk clock.Clock,
 ) wakeEvaluation {
@@ -91,6 +91,13 @@ func evaluateWakeReasons(
 		if !waitHold && (!sleepSuppressed || hasDemand || isAlwaysNamed) {
 			reasons = append(reasons, WakeConfig)
 		}
+	}
+	// WakeWork: the work_query reports pending work for this template.
+	// This fires independently of poolDesired — if scale_check hasn't
+	// caught up yet but work_query already sees routed beads, WakeWork
+	// ensures the session wakes without waiting for the next tick.
+	if !waitHold && workSet[template] {
+		reasons = append(reasons, WakeWork)
 	}
 	if !waitHold && sessionKeepWarmEligible(session, policy, sp, clk) {
 		reasons = append(reasons, WakeKeepWarm)
@@ -347,6 +354,7 @@ func containsWakeReason(reasons []WakeReason, want WakeReason) bool {
 
 func hasDependencyWakeRoot(reasons []WakeReason) bool {
 	return containsWakeReason(reasons, WakeConfig) ||
+		containsWakeReason(reasons, WakeWork) ||
 		containsWakeReason(reasons, WakeWait) ||
 		containsWakeReason(reasons, WakeCreate) ||
 		containsWakeReason(reasons, WakeSession) ||
