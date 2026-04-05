@@ -332,6 +332,10 @@ type managedCity struct {
 	tombstoned atomic.Bool   // set before Remove() in shutdown paths for teardown safety
 }
 
+// managedCityStopTimeout returns the grace period for a city stop.
+// Only ShutdownTimeoutDuration is used — startup and drift-drain timeouts
+// are intentionally excluded because they govern unrelated lifecycle phases.
+// The 5s nil-config fallback matches ShutdownTimeoutDuration's own default.
 func managedCityStopTimeout(mc *managedCity) time.Duration {
 	if mc == nil || mc.cr == nil || mc.cr.cfg == nil {
 		return 5 * time.Second
@@ -1443,10 +1447,10 @@ func supervisorBuildAgentsFn(cityPath, cityName string, stderr io.Writer) func(*
 	}
 }
 
-func supervisorBuildAgentsFnWithSessionBeads(cityPath, cityName string, stderr io.Writer) func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot) DesiredStateResult {
+func supervisorBuildAgentsFnWithSessionBeads(cityPath, cityName string, stderr io.Writer) func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot, *sessionReconcilerTraceCycle) DesiredStateResult {
 	beaconTime := time.Now()
-	return func(c *config.City, sp runtime.Provider, store beads.Store, rigStores map[string]beads.Store, sessionBeads *sessionBeadSnapshot) DesiredStateResult {
-		return buildDesiredStateWithSessionBeads(cityName, cityPath, beaconTime, c, sp, store, rigStores, sessionBeads, stderr)
+	return func(c *config.City, sp runtime.Provider, store beads.Store, rigStores map[string]beads.Store, sessionBeads *sessionBeadSnapshot, trace *sessionReconcilerTraceCycle) DesiredStateResult {
+		return buildDesiredStateWithSessionBeads(cityName, cityPath, beaconTime, c, sp, store, rigStores, sessionBeads, trace, stderr)
 	}
 }
 

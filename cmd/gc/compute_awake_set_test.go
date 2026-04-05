@@ -896,16 +896,79 @@ func TestWorkSet_SkipsSuspendedAgent(t *testing.T) {
 	assertAsleep(t, result, "polecat-mc-1")
 }
 
-func TestWorkSet_SkipsNamedSessionTemplate(t *testing.T) {
-	// Named sessions wake via assignee, not WorkSet.
+func TestWorkSet_WakesNamedSessionFromTemplateKey(t *testing.T) {
 	result := ComputeAwakeSet(AwakeInput{
-		Agents:        []AwakeAgent{{QualifiedName: "hello-world/refinery"}},
-		NamedSessions: []AwakeNamedSession{{Identity: "hello-world/refinery", Template: "hello-world/refinery", Mode: "on_demand"}},
-		SessionBeads:  []AwakeSessionBead{{ID: "mc-1", SessionName: "hello-world--refinery", Template: "hello-world/refinery", State: "asleep", NamedIdentity: "hello-world/refinery"}},
-		WorkSet:       map[string]bool{"hello-world/refinery": true},
+		Agents:        []AwakeAgent{{QualifiedName: "hello-world/worker"}},
+		NamedSessions: []AwakeNamedSession{{Identity: "hello-world/refinery", Template: "hello-world/worker", Mode: "on_demand"}},
+		SessionBeads:  []AwakeSessionBead{{ID: "mc-1", SessionName: "hello-world--refinery", Template: "hello-world/worker", State: "asleep", NamedIdentity: "hello-world/refinery"}},
+		WorkSet:       map[string]bool{"hello-world/worker": true},
 		Now:           now,
 	})
-	assertAsleep(t, result, "hello-world--refinery")
+	assertAwake(t, result, "hello-world--refinery")
+	assertReason(t, result, "hello-world--refinery", "named-on-demand:work-query")
+}
+
+func TestWorkSet_WakesRigScopedNamedSessionFromQualifiedTemplateKey(t *testing.T) {
+	result := ComputeAwakeSet(AwakeInput{
+		Agents:        []AwakeAgent{{QualifiedName: "rig-a/worker"}},
+		NamedSessions: []AwakeNamedSession{{Identity: "rig-a/refinery", Template: "rig-a/worker", Mode: "on_demand"}},
+		SessionBeads:  []AwakeSessionBead{{ID: "mc-1", SessionName: "gc-test--rig-a--refinery", Template: "rig-a/worker", State: "asleep", NamedIdentity: "rig-a/refinery"}},
+		WorkSet:       map[string]bool{"rig-a/worker": true},
+		Now:           now,
+	})
+	assertAwake(t, result, "gc-test--rig-a--refinery")
+	assertReason(t, result, "gc-test--rig-a--refinery", "named-on-demand:work-query")
+}
+
+func TestWorkSet_SkipsOrdinarySiblingForNamedTemplate(t *testing.T) {
+	result := ComputeAwakeSet(AwakeInput{
+		Agents:        []AwakeAgent{{QualifiedName: "hello-world/worker"}},
+		NamedSessions: []AwakeNamedSession{{Identity: "hello-world/refinery", Template: "hello-world/worker", Mode: "on_demand"}},
+		SessionBeads: []AwakeSessionBead{
+			{ID: "mc-ordinary", SessionName: "worker-pool-1", Template: "hello-world/worker", State: "active"},
+			{ID: "mc-named", SessionName: "hello-world--refinery", Template: "hello-world/worker", State: "active", NamedIdentity: "hello-world/refinery"},
+		},
+		WorkSet:         map[string]bool{"hello-world/worker": true},
+		RunningSessions: map[string]bool{"worker-pool-1": true, "hello-world--refinery": true},
+		Now:             now,
+	})
+	assertAsleep(t, result, "worker-pool-1")
+	assertAwake(t, result, "hello-world--refinery")
+	assertReason(t, result, "hello-world--refinery", "named-on-demand:work-query")
+}
+
+func TestScaleCheck_SkipsOrdinarySiblingForNamedTemplate(t *testing.T) {
+	result := ComputeAwakeSet(AwakeInput{
+		Agents:        []AwakeAgent{{QualifiedName: "hello-world/worker"}},
+		NamedSessions: []AwakeNamedSession{{Identity: "hello-world/refinery", Template: "hello-world/worker", Mode: "on_demand"}},
+		SessionBeads: []AwakeSessionBead{
+			{ID: "mc-ordinary", SessionName: "worker-pool-1", Template: "hello-world/worker", State: "active"},
+			{ID: "mc-named", SessionName: "hello-world--refinery", Template: "hello-world/worker", State: "active", NamedIdentity: "hello-world/refinery"},
+		},
+		ScaleCheckCounts: map[string]int{"hello-world/worker": 1},
+		RunningSessions:  map[string]bool{"worker-pool-1": true, "hello-world--refinery": true},
+		Now:              now,
+	})
+	assertAsleep(t, result, "worker-pool-1")
+	assertAwake(t, result, "hello-world--refinery")
+	assertReason(t, result, "hello-world--refinery", "on-demand:running")
+}
+
+func TestScaleCheck_SkipsOrdinarySiblingForRigScopedNamedTemplate(t *testing.T) {
+	result := ComputeAwakeSet(AwakeInput{
+		Agents:        []AwakeAgent{{QualifiedName: "rig-a/worker"}},
+		NamedSessions: []AwakeNamedSession{{Identity: "rig-a/refinery", Template: "rig-a/worker", Mode: "on_demand"}},
+		SessionBeads: []AwakeSessionBead{
+			{ID: "mc-ordinary", SessionName: "worker-pool-1", Template: "rig-a/worker", State: "active"},
+			{ID: "mc-named", SessionName: "gc-test--rig-a--refinery", Template: "rig-a/worker", State: "active", NamedIdentity: "rig-a/refinery"},
+		},
+		ScaleCheckCounts: map[string]int{"rig-a/worker": 1},
+		RunningSessions:  map[string]bool{"worker-pool-1": true, "gc-test--rig-a--refinery": true},
+		Now:              now,
+	})
+	assertAsleep(t, result, "worker-pool-1")
+	assertAwake(t, result, "gc-test--rig-a--refinery")
+	assertReason(t, result, "gc-test--rig-a--refinery", "on-demand:running")
 }
 
 func TestWorkSet_FallsBackToCreating(t *testing.T) {

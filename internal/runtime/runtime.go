@@ -21,6 +21,10 @@ var ErrSessionExists = errors.New("session already exists")
 // structured pending/respond interaction capability for the requested session.
 var ErrInteractionUnsupported = errors.New("session interaction is unsupported")
 
+// ErrSessionDiedDuringStartup reports that a provider created a session
+// process, but it exited before startup completed successfully.
+var ErrSessionDiedDuringStartup = errors.New("session died during startup")
+
 // ContentBlock represents a content element in a message.
 // Type is "text" or "file_path".
 type ContentBlock struct {

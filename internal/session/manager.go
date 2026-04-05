@@ -221,6 +221,9 @@ func (m *Manager) createAliasedNamedWithTransport(ctx context.Context, alias, ex
 	if err != nil {
 		return Info{}, err
 	}
+	if title == "" {
+		title = template
+	}
 	var info Info
 	err = withSessionIdentifierReservationLocks([]string{alias, explicitName}, func() error {
 		if err := ensureSessionAliasAvailable(m.store, nil, alias, "", ""); err != nil {
@@ -424,6 +427,9 @@ func (m *Manager) createAliasedBeadOnlyNamed(alias, explicitName, template, titl
 	if err != nil {
 		return Info{}, err
 	}
+	if title == "" {
+		title = template
+	}
 	var info Info
 	err = withSessionIdentifierReservationLocks([]string{alias, explicitName}, func() error {
 		if err := ensureSessionAliasAvailable(m.store, nil, alias, "", ""); err != nil {
@@ -465,10 +471,10 @@ func (m *Manager) createAliasedBeadOnlyNamed(alias, explicitName, template, titl
 		if sessionKey != "" {
 			meta["session_key"] = sessionKey
 		}
+		meta["pending_create_claim"] = "true"
 		if explicitName != "" {
 			meta["session_name"] = explicitName
 			meta["session_name_explicit"] = "true"
-			meta["pending_create_claim"] = "true"
 		}
 		for k, v := range extraMeta {
 			meta[k] = v

@@ -150,13 +150,14 @@ func cmdSessionNew(args []string, alias, title string, noAttach bool, stdout, st
 	// Store the canonical qualified name so the reconciler can match it
 	// via findAgentByTemplate (which compares against QualifiedName()).
 	canonicalTemplate := found.QualifiedName()
+	singletonOwner := sessionNewAliasOwner(cfg, &found)
 
 	// Try reconciler-first path: create bead, poke controller.
 	if pokeErr := pokeController(cityPath); pokeErr == nil {
 		// Controller is running — create bead only, let reconciler start it.
 		var info session.Info
 		err := session.WithCitySessionAliasLock(cityPath, alias, func() error {
-			if err := session.EnsureAliasAvailableWithConfig(store, cfg, alias, ""); err != nil {
+			if err := session.EnsureAliasAvailableWithConfigForOwner(store, cfg, alias, "", singletonOwner); err != nil {
 				return err
 			}
 			var createErr error
@@ -215,7 +216,7 @@ func cmdSessionNew(args []string, alias, title string, noAttach bool, stdout, st
 
 	var info session.Info
 	err = session.WithCitySessionAliasLock(cityPath, alias, func() error {
-		if err := session.EnsureAliasAvailableWithConfig(store, cfg, alias, ""); err != nil {
+		if err := session.EnsureAliasAvailableWithConfigForOwner(store, cfg, alias, "", singletonOwner); err != nil {
 			return err
 		}
 		var createErr error
@@ -255,6 +256,17 @@ func resolveSessionTemplate(cfg *config.City, input, currentRigDir string) (conf
 		}
 	}
 	return config.Agent{}, false
+}
+
+func sessionNewAliasOwner(cfg *config.City, agent *config.Agent) string {
+	if cfg == nil || agent == nil {
+		return ""
+	}
+	owner := agent.QualifiedName()
+	if config.FindNamedSession(cfg, owner) == nil {
+		return ""
+	}
+	return owner
 }
 
 // waitForSession polls the provider until the session is running or timeout.
