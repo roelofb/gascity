@@ -276,6 +276,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v0/order/{name}/enable", s.handleOrderEnable)
 	s.mux.HandleFunc("POST /v0/order/{name}/disable", s.handleOrderDisable)
 	s.mux.HandleFunc("GET /v0/formulas", s.handleFormulaList)
+	s.mux.HandleFunc("GET /v0/formulas/feed", s.handleFormulaFeed)
 	s.mux.HandleFunc("GET /v0/formulas/{name}/runs", s.handleFormulaRuns)
 	s.mux.HandleFunc("GET /v0/formulas/{name}", s.handleFormulaDetail)
 	s.mux.HandleFunc("GET /v0/formula/{name}", s.handleFormulaDetail)
