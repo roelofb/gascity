@@ -414,6 +414,43 @@ func TestResolveSessionIDMaterializingNamed_MaterializesConfiguredNamedSession(t
 	}
 }
 
+func TestResolveSessionIDMaterializingNamed_AdoptsCanonicalRuntimeSessionNameBead(t *testing.T) {
+	store := beads.NewMemStore()
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:         "mayor",
+			StartCommand: "true",
+		}},
+		NamedSessions: []config.NamedSession{{
+			Template: "mayor",
+		}},
+	}
+	sessionName := config.NamedSessionRuntimeName(cfg.EffectiveCityName(), cfg.Workspace, "mayor")
+	bead, err := store.Create(beads.Bead{
+		Title:  "mayor",
+		Type:   session.BeadType,
+		Labels: []string{session.LabelSession},
+		Metadata: map[string]string{
+			"session_name": sessionName,
+			"template":     "mayor",
+			"agent_name":   "mayor",
+			"state":        "asleep",
+		},
+	})
+	if err != nil {
+		t.Fatalf("store.Create(): %v", err)
+	}
+
+	id, err := resolveSessionIDMaterializingNamed(t.TempDir(), cfg, store, "mayor")
+	if err != nil {
+		t.Fatalf("resolveSessionIDMaterializingNamed(mayor): %v", err)
+	}
+	if id != bead.ID {
+		t.Fatalf("resolved ID = %q, want adopted bead %q", id, bead.ID)
+	}
+}
+
 func TestResolveSessionIDMaterializingNamed_RecreatesClosedConfiguredNamedSession(t *testing.T) {
 	t.Setenv("GC_SESSION", "fake")
 

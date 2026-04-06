@@ -74,7 +74,7 @@ func resolveConfiguredNamedSessionID(
 	if err != nil {
 		return "", true, err
 	}
-	if bead, ok := findCanonicalNamedSessionBead(snapshot, spec.Identity); ok {
+	if bead, ok := findCanonicalNamedSessionBead(snapshot, spec); ok {
 		return bead.ID, true, nil
 	}
 	// When materializing, check for a closed bead with this identity and
