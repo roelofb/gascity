@@ -529,7 +529,7 @@ func rigBeadsStatus(fs fsys.FS, dir string) string {
 
 func newRigSuspendCmd(stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
-		Use:   "suspend <name>",
+		Use:   "suspend [name]",
 		Short: "Suspend a rig (reconciler will skip its agents)",
 		Long: `Suspend a rig by setting suspended=true in city.toml.
 
@@ -616,7 +616,7 @@ func doRigSuspend(fs fsys.FS, cityPath, rigName string, stdout, stderr io.Writer
 
 func newRigResumeCmd(stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
-		Use:   "resume <name>",
+		Use:   "resume [name]",
 		Short: "Resume a suspended rig",
 		Long: `Resume a suspended rig by clearing suspended in city.toml.
 

@@ -193,6 +193,50 @@ func TestRigAnywhere_CmdRigSuspendFromRigDir(t *testing.T) {
 	}
 }
 
+func TestRigAnywhere_CmdRigStatusFromRigDir(t *testing.T) {
+	for _, insideCity := range []bool{true, false} {
+		name := "outside_city"
+		if insideCity {
+			name = "inside_city"
+		}
+		t.Run(name, func(t *testing.T) {
+			fx := setupRegisteredRigFixture(t, insideCity, false)
+			setCwd(t, fx.workDir)
+
+			var stdout, stderr bytes.Buffer
+			code := cmdRigStatus(nil, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("cmdRigStatus() = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if !strings.Contains(stdout.String(), fx.rigName+":") {
+				t.Fatalf("stdout = %q, want rig name header", stdout.String())
+			}
+		})
+	}
+}
+
+func TestRigAnywhere_CmdRigRestartFromRigDir(t *testing.T) {
+	for _, insideCity := range []bool{true, false} {
+		name := "outside_city"
+		if insideCity {
+			name = "inside_city"
+		}
+		t.Run(name, func(t *testing.T) {
+			fx := setupRegisteredRigFixture(t, insideCity, false)
+			setCwd(t, fx.workDir)
+
+			var stdout, stderr bytes.Buffer
+			code := cmdRigRestart(nil, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("cmdRigRestart() = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "Restarted") {
+				t.Fatalf("stdout = %q, want restart confirmation", stdout.String())
+			}
+		})
+	}
+}
+
 func TestRigAnywhere_CmdRigResumeFromRigDir(t *testing.T) {
 	for _, insideCity := range []bool{true, false} {
 		name := "outside_city"

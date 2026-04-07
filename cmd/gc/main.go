@@ -334,11 +334,7 @@ func resolveContext() (resolvedContext, error) {
 // resolveCity returns the city root path. Thin wrapper over resolveContext
 // for the many callers that only need the city path.
 func resolveCity() (string, error) {
-	ctx, err := resolveContext()
-	if err != nil {
-		return "", err
-	}
-	return ctx.CityPath, nil
+	return resolveCommandCity(nil)
 }
 
 func resolveContextFromPath(path string) (resolvedContext, error) {
