@@ -276,16 +276,13 @@ func reconcileSessionBeadsTraced(
 						fmt.Fprintf(stdout, "Skipping drain for '%s': store query partial (transient failure)\n", name) //nolint:errcheck
 						continue
 					}
-					reason := "orphaned"
-					if configuredNames[name] {
-						reason = "suspended"
-					}
+					reason := classifyUndesiredSession(*session, cfg, configuredNames)
 					template := normalizedSessionTemplate(*session, cfg)
 					if template == "" {
 						template = session.Metadata["template"]
 					}
 					if trace != nil {
-						trace.recordDecision("reconciler.session.orphan_or_suspended", template, name, reason, "drain", traceRecordPayload{
+						trace.recordDecision("reconciler.session.undesired_drain", template, name, reason, "drain", traceRecordPayload{
 							"store_query_partial": storeQueryPartial,
 							"provider_alive":      providerAlive,
 						}, nil, "")
@@ -294,16 +291,13 @@ func reconcileSessionBeadsTraced(
 					fmt.Fprintf(stdout, "Draining session '%s': %s\n", name, reason) //nolint:errcheck
 				} else {
 					// Not running and not desired — close the bead.
-					reason := "orphaned"
-					if configuredNames[name] {
-						reason = "suspended"
-					}
+					reason := classifyUndesiredSession(*session, cfg, configuredNames)
 					template := normalizedSessionTemplate(*session, cfg)
 					if template == "" {
 						template = session.Metadata["template"]
 					}
 					if trace != nil {
-						trace.recordDecision("reconciler.session.close_orphan", template, name, reason, "closed", nil, nil, "")
+						trace.recordDecision("reconciler.session.undesired_close", template, name, reason, "closed", nil, nil, "")
 					}
 					closeBead(store, session.ID, reason, clk.Now().UTC(), stderr)
 				}
