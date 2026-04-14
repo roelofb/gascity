@@ -1127,3 +1127,24 @@ start_command = "echo hello"
 		t.Fatalf("eval1 gc.retry_session_recycled = %q, want true", evalAfter.Metadata["gc.retry_session_recycled"])
 	}
 }
+
+func TestFindBeadAcrossStoresPropagatesCityStoreErrors(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte(`[workspace]
+name = "test-city"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(city.toml): %v", err)
+	}
+	t.Setenv("GC_BEADS", "exec:/definitely/missing/provider")
+
+	_, _, err := findBeadAcrossStores(cityPath, "gc-missing")
+	if err == nil {
+		t.Fatal("findBeadAcrossStores() error = nil, want provider failure")
+	}
+	if !strings.Contains(err.Error(), "getting bead \"gc-missing\" from city store") {
+		t.Fatalf("findBeadAcrossStores() error = %v, want city store context", err)
+	}
+	if strings.Contains(err.Error(), "bead not found") {
+		t.Fatalf("findBeadAcrossStores() error = %v, want provider failure instead of masked not-found", err)
+	}
+}

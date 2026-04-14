@@ -174,10 +174,13 @@ func runControlDispatcher(beadID string, stdout, _ io.Writer) error {
 func findBeadAcrossStores(cityPath, beadID string) (beads.Store, beads.Bead, error) {
 	// Try city store first.
 	cityStore, err := openStoreAtForCity(cityPath, cityPath)
-	if err == nil {
-		if b, err := cityStore.Get(beadID); err == nil {
-			return cityStore, b, nil
-		}
+	if err != nil {
+		return nil, beads.Bead{}, fmt.Errorf("opening city store: %w", err)
+	}
+	if b, err := cityStore.Get(beadID); err == nil {
+		return cityStore, b, nil
+	} else if !errors.Is(err, beads.ErrNotFound) {
+		return nil, beads.Bead{}, fmt.Errorf("getting bead %q from city store: %w", beadID, err)
 	}
 
 	// Try rig stores.
@@ -188,10 +191,12 @@ func findBeadAcrossStores(cityPath, beadID string) (beads.Store, beads.Bead, err
 	for _, rig := range cfg.Rigs {
 		rigStore, err := openStoreAtForCity(rig.Path, cityPath)
 		if err != nil {
-			continue
+			return nil, beads.Bead{}, fmt.Errorf("opening rig store %q: %w", rig.Name, err)
 		}
 		if b, err := rigStore.Get(beadID); err == nil {
 			return rigStore, b, nil
+		} else if !errors.Is(err, beads.ErrNotFound) {
+			return nil, beads.Bead{}, fmt.Errorf("getting bead %q from rig store %q: %w", beadID, rig.Name, err)
 		}
 	}
 

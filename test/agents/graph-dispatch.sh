@@ -176,10 +176,45 @@ owned_status_ok() {
     [ "$status" = "open" ] || [ "$status" = "in_progress" ]
 }
 
+ack_drain_if_idle() {
+    if [ -z "$ASSIGNEE" ]; then
+        return 1
+    fi
+    if ! gc runtime drain-check 2>/dev/null; then
+        return 1
+    fi
+    trace "drain-requested assignee=$ASSIGNEE"
+    gc runtime drain-ack 2>/dev/null || true
+    trace "drain-acked assignee=$ASSIGNEE"
+    exit 0
+}
+
 trace "startup pid=$$ assignee=${ASSIGNEE:-}"
 trace_store
 cleanup() {
     local rc=$?
+    local running_status=""
+    local running_assignee=""
+    local running_outcome=""
+    if [ -n "${pending_claim_bead:-}" ]; then
+        if timeout 10 bd update "$pending_claim_bead" --assignee "" --status open >/dev/null 2>&1; then
+            trace "cleanup-released bead=$pending_claim_bead assignee=$ASSIGNEE"
+        else
+            trace "cleanup-release-failed bead=$pending_claim_bead assignee=$ASSIGNEE"
+        fi
+    fi
+    if [ -n "${running_bead:-}" ]; then
+        running_status=$(show_status "$running_bead" 2>/dev/null || true)
+        running_assignee=$(show_assignee "$running_bead" 2>/dev/null || true)
+        running_outcome=$(show_outcome "$running_bead" 2>/dev/null || true)
+        if [ "$running_status" = "in_progress" ] && [ "$running_assignee" = "$BEADS_ACTOR" ] && [ -z "$running_outcome" ]; then
+            if timeout 10 bd update "$running_bead" --assignee "" --status open >/dev/null 2>&1; then
+                trace "cleanup-released-running bead=$running_bead assignee=$ASSIGNEE"
+            else
+                trace "cleanup-release-running-failed bead=$running_bead assignee=$ASSIGNEE"
+            fi
+        fi
+    fi
     trace "exit pid=$rc shell=$$"
     trap - EXIT INT TERM
     pkill -TERM -P $$ >/dev/null 2>&1 || true
@@ -189,6 +224,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 misses=0
+pending_claim_bead=""
+running_bead=""
 
 jq_bead() {
     local filter="$1"
@@ -221,7 +258,10 @@ fetch_ready_queue() {
     fi
     case "$ASSIGNEE" in
         polecat-*)
-            timeout 10 gc hook "$ASSIGNEE" 2>/dev/null
+            # gc hook resolves the current session via GC_ALIAS/GC_AGENT.
+            # Passing the bead-named tmux session (for example polecat-rft-xyz)
+            # bypasses that resolution and hides routed pool work.
+            timeout 10 gc hook 2>/dev/null
             ;;
         *)
             timeout 10 bd ready --assignee "$ASSIGNEE" --json --limit=20 2>/dev/null
@@ -310,11 +350,17 @@ while true; do
         trace "resume bead=$bead_id assignee=$ASSIGNEE"
     fi
 
+    if [ "$owns_bead" != "true" ]; then
+        ack_drain_if_idle || true
+    fi
+
     ready=""
     ready_rc=0
     if [ -z "$bead_id" ]; then
         if [ -n "$ASSIGNEE" ]; then
-            if ! ready=$(fetch_ready_queue); then
+            if ready=$(fetch_ready_queue); then
+                :
+            else
                 ready_rc=$?
             fi
         fi
@@ -336,6 +382,7 @@ while true; do
     is_claimable_work=$(printf '%s\n' "$bead_json" | jq -r '(.assignee // "" | length == 0) and ((((.metadata // {})["gc.routed_to"] // "" | length > 0) or ((.labels // []) | any(startswith("pool:")))))' 2>/dev/null || echo "false")
     claimed_here="false"
     if [ "$is_claimable_work" = "true" ] && [ "$owns_bead" != "true" ]; then
+        ack_drain_if_idle || true
         if ! claimed=$(timeout 10 bd update "$bead_id" --claim --json 2>/dev/null); then
             trace "claim-miss bead=$bead_id assignee=$ASSIGNEE"
             sleep 0.2
@@ -345,6 +392,7 @@ while true; do
         bead_id=$(printf '%s\n' "$bead_json" | json_payload | jq -r 'if type == "array" then (.[0].id // "") else (.id // "") end' 2>/dev/null || true)
         claimed_here="true"
         owns_bead="true"
+        pending_claim_bead="$bead_id"
         trace "claim bead=$bead_id assignee=$ASSIGNEE"
     fi
 
@@ -376,6 +424,7 @@ while true; do
             if ! timeout 10 bd update "$bead_id" --assignee "" --status open >/dev/null 2>&1; then
                 trace "release-failed bead=$bead_id ref=$ref"
             else
+                pending_claim_bead=""
                 trace "released bead=$bead_id ref=$ref"
             fi
         fi
@@ -436,14 +485,16 @@ while true; do
         continue
     fi
 
-    printf '%s\n' "$ref" >> "$REPORT_FILE"
-    trace "run bead=$bead_id ref=$ref kind=$kind source=$source_id work_dir=$work_dir"
-    trace_store
-
     if should_exit_after_claim_once "$ref"; then
         trace "exit-after-claim bead=$bead_id ref=$ref assignee=$ASSIGNEE"
         exit 1
     fi
+
+    pending_claim_bead=""
+    running_bead="$bead_id"
+    printf '%s\n' "$ref" >> "$REPORT_FILE"
+    trace "run bead=$bead_id ref=$ref kind=$kind source=$source_id work_dir=$work_dir"
+    trace_store
 
     case "$ref" in
         *.workspace-setup*)
@@ -462,6 +513,7 @@ while true; do
                 status_after=$(show_status "$bead_id" 2>/dev/null || true)
                 outcome_after=$(show_outcome "$bead_id" 2>/dev/null || true)
                 trace "closed bead=$bead_id status=$status_after outcome=$outcome_after"
+                running_bead=""
                 continue
             fi
             ;;
@@ -497,6 +549,7 @@ while true; do
         status_after=$(show_status "$bead_id" 2>/dev/null || true)
         outcome_after=$(show_outcome "$bead_id" 2>/dev/null || true)
         trace "closed bead=$bead_id status=$status_after outcome=$outcome_after"
+        running_bead=""
         continue
     fi
     if should_fail_transient_always "$ref"; then
@@ -507,6 +560,7 @@ while true; do
         status_after=$(show_status "$bead_id" 2>/dev/null || true)
         outcome_after=$(show_outcome "$bead_id" 2>/dev/null || true)
         trace "closed bead=$bead_id status=$status_after outcome=$outcome_after"
+        running_bead=""
         continue
     fi
 
@@ -538,4 +592,5 @@ while true; do
     status_after=$(show_status "$bead_id" 2>/dev/null || true)
     outcome_after=$(show_outcome "$bead_id" 2>/dev/null || true)
     trace "closed bead=$bead_id status=$status_after outcome=$outcome_after"
+    running_bead=""
 done

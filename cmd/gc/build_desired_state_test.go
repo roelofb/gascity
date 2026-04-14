@@ -218,6 +218,61 @@ func TestBuildDesiredState_RoutedQueueDoesNotCreateOneSessionPerBead(t *testing.
 	}
 }
 
+func TestBuildDesiredState_SingletonAssignedWorkKeepsSingletonIdentity(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	if _, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:worker"},
+		Metadata: map[string]string{
+			"template":     "worker",
+			"agent_name":   "worker",
+			"session_name": "worker",
+			"state":        "active",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Title:    "assigned worker job",
+		Type:     "task",
+		Status:   "open",
+		Assignee: "worker",
+		Metadata: map[string]string{
+			"gc.routed_to": "worker",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "worker",
+			StartCommand:      "true",
+			MaxActiveSessions: intPtr(1),
+		}},
+	}
+
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, io.Discard)
+	if len(dsResult.State) != 1 {
+		t.Fatalf("desired sessions = %d, want 1", len(dsResult.State))
+	}
+	tp, ok := dsResult.State["worker"]
+	if !ok {
+		t.Fatalf("desired keys = %v, want singleton session 'worker'", mapKeys(dsResult.State))
+	}
+	if tp.InstanceName != "worker" {
+		t.Fatalf("InstanceName = %q, want worker", tp.InstanceName)
+	}
+	if got := tp.Env["GC_ALIAS"]; got != "worker" {
+		t.Fatalf("GC_ALIAS = %q, want worker", got)
+	}
+	if tp.PoolSlot != 0 {
+		t.Fatalf("PoolSlot = %d, want 0 for singleton agent", tp.PoolSlot)
+	}
+}
+
 func TestBuildDesiredState_OnDemandNamedSession_RoutedMetadataAloneDoesNotMaterialize(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()

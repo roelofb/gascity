@@ -73,10 +73,10 @@ func builtinPackIncludes(cityPath string) []string {
 
 	// bd is gated on the beads provider. The bd pack already includes dolt,
 	// so loading both here would expand the dolt pack twice.
-	provider := os.Getenv("GC_BEADS")
+	provider := normalizeBeadsProvider(os.Getenv("GC_BEADS"))
 	if provider == "" {
 		// Peek at city.toml for the provider setting without full config load.
-		provider = peekBeadsProvider(filepath.Join(cityPath, "city.toml"))
+		provider = normalizeBeadsProvider(peekBeadsProvider(filepath.Join(cityPath, "city.toml")))
 	}
 	if provider == "" || provider == "bd" {
 		if bdPath := filepath.Join(systemRoot, "bd"); packExists(bdPath) {

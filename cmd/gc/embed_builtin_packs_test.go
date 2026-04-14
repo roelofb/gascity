@@ -292,6 +292,27 @@ func TestBuiltinPackIncludes_EnvOverride(t *testing.T) {
 	}
 }
 
+func TestBuiltinPackIncludes_ManagedExecEnvStillIncludesBd(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GC_BEADS", "exec:"+filepath.Join(dir, ".gc", "system", "bin", "gc-beads-bd"))
+	includes := builtinPackIncludes(dir)
+
+	if len(includes) != 2 {
+		t.Fatalf("builtinPackIncludes() = %v, want maintenance + bd", includes)
+	}
+	if got := filepath.Base(includes[0]); got != "maintenance" {
+		t.Errorf("includes[0] base = %q, want maintenance", got)
+	}
+	if got := filepath.Base(includes[1]); got != "bd" {
+		t.Errorf("includes[1] base = %q, want bd", got)
+	}
+}
+
 func TestBuiltinPackIncludes_NotMaterialized(t *testing.T) {
 	dir := t.TempDir()
 

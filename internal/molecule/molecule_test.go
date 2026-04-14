@@ -507,6 +507,29 @@ func TestInstantiateWithParentID(t *testing.T) {
 	}
 }
 
+func TestInstantiatePreserveRootTypeKeepsTaskRoot(t *testing.T) {
+	store := beads.NewMemStore()
+	recipe := &formula.Recipe{
+		Name: "attempt",
+		Steps: []formula.RecipeStep{
+			{ID: "attempt", Title: "Attempt", Type: "task", IsRoot: true},
+		},
+	}
+
+	result, err := Instantiate(context.Background(), store, recipe, Options{PreserveRootType: true})
+	if err != nil {
+		t.Fatalf("Instantiate: %v", err)
+	}
+
+	root, err := store.Get(result.RootID)
+	if err != nil {
+		t.Fatalf("Get(root): %v", err)
+	}
+	if root.Type != "task" {
+		t.Fatalf("root.Type = %q, want task", root.Type)
+	}
+}
+
 func TestInstantiateGraphWorkflowIgnoresParentIDOnRoot(t *testing.T) {
 	store := beads.NewMemStore()
 
@@ -1454,4 +1477,27 @@ func TestInstantiateFragmentRejectsResidualTitleVars(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
+}
+
+func TestBuildRecipeApplyPlan_PreserveRootTypeKeepsTaskRoot(t *testing.T) {
+	recipe := &formula.Recipe{
+		Name: "attempt",
+		Steps: []formula.RecipeStep{
+			{ID: "attempt", Title: "Attempt", Type: "task", IsRoot: true},
+		},
+	}
+
+	plan, _, rootKey, err := buildRecipeApplyPlan(recipe, Options{PreserveRootType: true})
+	if err != nil {
+		t.Fatalf("buildRecipeApplyPlan: %v", err)
+	}
+	if rootKey != "attempt" {
+		t.Fatalf("rootKey = %q, want attempt", rootKey)
+	}
+	if len(plan.Nodes) != 1 {
+		t.Fatalf("len(plan.Nodes) = %d, want 1", len(plan.Nodes))
+	}
+	if plan.Nodes[0].Type != "task" {
+		t.Fatalf("plan root type = %q, want task", plan.Nodes[0].Type)
+	}
 }

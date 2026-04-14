@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -184,7 +185,7 @@ func writeCityToml(t *testing.T, cityDir, cityName, startCommand string) {
 
 // quote returns a TOML-safe quoted string.
 func quote(s string) string {
-	return "\"" + s + "\""
+	return strconv.Quote(s)
 }
 
 func repoRoot(t *testing.T) string {

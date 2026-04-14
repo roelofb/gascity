@@ -482,6 +482,57 @@ func TestFindLatestAttemptNestedRetryInsideRalph(t *testing.T) {
 	}
 }
 
+func TestFindLatestAttemptFallsBackToDirectDependencyWhenRootIsScoped(t *testing.T) {
+	t.Parallel()
+	store := beads.NewMemStore()
+
+	workflow := mustCreate(t, store, beads.Bead{
+		Title:    "workflow",
+		Metadata: map[string]string{"gc.kind": "workflow"},
+	})
+	scope := mustCreate(t, store, beads.Bead{
+		Title: "review-loop iteration 2",
+		Metadata: map[string]string{
+			"gc.kind":         "scope",
+			"gc.root_bead_id": workflow.ID,
+			"gc.step_ref":     "mol-adopt-pr-v2.review-loop.iteration.2",
+			"gc.attempt":      "2",
+		},
+	})
+
+	control := mustCreate(t, store, beads.Bead{
+		Title: "review-codex retry",
+		Metadata: map[string]string{
+			"gc.kind":         "retry",
+			"gc.root_bead_id": scope.ID,
+			"gc.step_ref":     "mol-adopt-pr-v2.review-loop.iteration.2.review-pipeline.review-codex",
+			"gc.step_id":      "review-pipeline.review-codex",
+		},
+	})
+
+	// Live integration failure shape: the retry wrapper is rooted to the
+	// scoped iteration bead, but the actual attempt bead still carries the
+	// workflow root and is only discoverable through the direct block edge.
+	attempt := mustCreate(t, store, beads.Bead{
+		Title: "review-codex attempt 1",
+		Metadata: map[string]string{
+			"gc.root_bead_id": workflow.ID,
+			"gc.step_ref":     "mol-adopt-pr-v2.review-loop.iteration.2.review-pipeline.review-codex.attempt.1",
+			"gc.attempt":      "2",
+		},
+	})
+	mustClose(t, store, attempt.ID)
+	mustDep(t, store, control.ID, attempt.ID, "blocks")
+
+	found, err := findLatestAttempt(store, mustGet(t, store, control.ID))
+	if err != nil {
+		t.Fatalf("findLatestAttempt: %v", err)
+	}
+	if found.ID != attempt.ID {
+		t.Fatalf("findLatestAttempt returned %q, want %q (direct dependency fallback)", found.ID, attempt.ID)
+	}
+}
+
 func TestFindLatestAttemptRalphIteration(t *testing.T) {
 	t.Parallel()
 	store := beads.NewMemStore()
@@ -652,8 +703,8 @@ func TestBuildAttemptRecipeRalphWithChildren(t *testing.T) {
 	if recipe.Name != "mol-test.converge.iteration.3" {
 		t.Errorf("recipe name = %q, want mol-test.converge.iteration.3", recipe.Name)
 	}
-	if len(recipe.Steps) != 3 {
-		t.Fatalf("steps = %d, want 3 (root + 2 children)", len(recipe.Steps))
+	if len(recipe.Steps) != 5 {
+		t.Fatalf("steps = %d, want 5 (root + 2 children + 2 scope-checks)", len(recipe.Steps))
 	}
 
 	// Root scope step.
@@ -667,32 +718,65 @@ func TestBuildAttemptRecipeRalphWithChildren(t *testing.T) {
 		t.Errorf("root gc.step_ref = %q, want mol-test.converge.iteration.3", recipe.Steps[0].Metadata["gc.step_ref"])
 	}
 
-	// Children with fully namespaced IDs.
-	if recipe.Steps[1].ID != "mol-test.converge.iteration.3.apply" {
-		t.Errorf("child 1 ID = %q, want mol-test.converge.iteration.3.apply", recipe.Steps[1].ID)
+	applyStep := recipe.StepByID("mol-test.converge.iteration.3.apply")
+	if applyStep == nil {
+		t.Fatal("missing apply step")
 	}
-	if recipe.Steps[1].Metadata["gc.step_ref"] != "mol-test.converge.iteration.3.apply" {
-		t.Errorf("child 1 gc.step_ref = %q, want mol-test.converge.iteration.3.apply", recipe.Steps[1].Metadata["gc.step_ref"])
+	if applyStep.Metadata["gc.step_ref"] != "mol-test.converge.iteration.3.apply" {
+		t.Errorf("apply gc.step_ref = %q, want mol-test.converge.iteration.3.apply", applyStep.Metadata["gc.step_ref"])
 	}
-	if recipe.Steps[1].Metadata["gc.attempt"] != "3" {
-		t.Errorf("child 1 gc.attempt = %q, want 3", recipe.Steps[1].Metadata["gc.attempt"])
+	if applyStep.Metadata["gc.attempt"] != "3" {
+		t.Errorf("apply gc.attempt = %q, want 3", applyStep.Metadata["gc.attempt"])
 	}
 
-	if recipe.Steps[2].ID != "mol-test.converge.iteration.3.verify" {
-		t.Errorf("child 2 ID = %q, want mol-test.converge.iteration.3.verify", recipe.Steps[2].ID)
+	verifyStep := recipe.StepByID("mol-test.converge.iteration.3.verify")
+	if verifyStep == nil {
+		t.Fatal("missing verify step")
+	}
+	applyScopeCheck := recipe.StepByID("mol-test.converge.iteration.3.apply-scope-check")
+	if applyScopeCheck == nil {
+		t.Fatal("missing apply scope-check")
+	}
+	if applyScopeCheck.Metadata["gc.kind"] != "scope-check" {
+		t.Errorf("apply scope-check gc.kind = %q, want scope-check", applyScopeCheck.Metadata["gc.kind"])
+	}
+	if applyScopeCheck.Metadata["gc.control_for"] != "mol-test.converge.iteration.3.apply" {
+		t.Errorf("apply scope-check gc.control_for = %q, want mol-test.converge.iteration.3.apply", applyScopeCheck.Metadata["gc.control_for"])
+	}
+	verifyScopeCheck := recipe.StepByID("mol-test.converge.iteration.3.verify-scope-check")
+	if verifyScopeCheck == nil {
+		t.Fatal("missing verify scope-check")
 	}
 
 	// Verify should block on apply (namespaced).
 	foundBlocksDep := false
+	foundScopeControlDep := false
+	foundScopeBodyDep := false
 	for _, dep := range recipe.Deps {
 		if dep.StepID == "mol-test.converge.iteration.3.verify" &&
-			dep.DependsOnID == "mol-test.converge.iteration.3.apply" &&
+			dep.DependsOnID == "mol-test.converge.iteration.3.apply-scope-check" &&
 			dep.Type == "blocks" {
 			foundBlocksDep = true
 		}
+		if dep.StepID == "mol-test.converge.iteration.3.apply-scope-check" &&
+			dep.DependsOnID == "mol-test.converge.iteration.3.apply" &&
+			dep.Type == "blocks" {
+			foundScopeControlDep = true
+		}
+		if dep.StepID == "mol-test.converge.iteration.3" &&
+			dep.DependsOnID == "mol-test.converge.iteration.3.verify-scope-check" &&
+			dep.Type == "blocks" {
+			foundScopeBodyDep = true
+		}
 	}
 	if !foundBlocksDep {
-		t.Errorf("missing dep: verify blocks on apply; deps = %+v", recipe.Deps)
+		t.Errorf("missing dep: verify blocks on apply scope-check; deps = %+v", recipe.Deps)
+	}
+	if !foundScopeControlDep {
+		t.Errorf("missing dep: apply scope-check blocks on apply; deps = %+v", recipe.Deps)
+	}
+	if !foundScopeBodyDep {
+		t.Errorf("missing dep: scope body blocks on verify scope-check; deps = %+v", recipe.Deps)
 	}
 
 	// Children should NOT have parent-child deps to the scope root —
