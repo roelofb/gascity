@@ -304,7 +304,7 @@ func buildAssignedSkillsPromptFragment(
 
 	var b strings.Builder
 	b.WriteString("## Skills available to this session\n\n")
-	fmt.Fprintf(&b, "You are `%s`. The following skills are materialized in your provider's skill directory and load automatically — you don't need to invoke anything extra.\n\n", //nolint:errcheck // strings.Builder.Write never errors
+	fmt.Fprintf(&b, "You are `%s`. The following skills are materialized in your provider's skill directory and load automatically — you don't need to invoke anything extra.\n\n", //nolint:errcheck // fmt.Fprintf into a strings.Builder never errors
 		agent.QualifiedName())
 
 	if len(agentCat.Entries) > 0 {

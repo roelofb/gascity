@@ -46,6 +46,10 @@ func TestReadSkillDescription(t *testing.T) {
 		{"frontmatter trailing CRLF", "---\r\nname: x\r\ndescription: win\r\n---\r\n", "win"},
 		{"description after closing", "---\nname: x\n---\ndescription: outside\n", ""},
 		{"empty value", "---\ndescription:\n---\n", ""},
+		// Regression for pass-1 Claude review: UTF-8 BOM emitted by
+		// Windows editors / some export pipelines must not blind
+		// the frontmatter detector.
+		{"utf-8 bom", "\ufeff---\nname: x\ndescription: survived bom\n---\n", "survived bom"},
 	}
 	for _, c := range cases {
 		c := c

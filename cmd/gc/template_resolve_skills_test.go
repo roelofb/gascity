@@ -244,4 +244,75 @@ func TestResolveTemplateAppendsAssignedSkillsPrompt(t *testing.T) {
 			t.Errorf("sinkless agent got the appendix:\n%s", tp.Prompt)
 		}
 	})
+
+	// Runtime gating — pass-1 Codex review regression. The appendix
+	// must NOT fire for agents whose runtime can't deliver the skills,
+	// otherwise the prompt lies ("skills are materialized and load
+	// automatically") to an agent whose sink is never populated.
+	t.Run("k8s city session skipped", func(t *testing.T) {
+		params := buildParams()
+		params.sessionProvider = "k8s"
+		a := &config.Agent{Name: "pod-worker", Scope: "city", Provider: "claude"}
+		tp, err := resolveTemplate(params, a, a.QualifiedName(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(tp.Prompt, "Skills available to this session") {
+			t.Errorf("k8s session got the appendix despite materialization not reaching it:\n%s", tp.Prompt)
+		}
+	})
+
+	t.Run("acp agent skipped", func(t *testing.T) {
+		// Give the provider ACP support so resolveTemplate accepts
+		// session = "acp"; the materialization gate is what should
+		// reject it.
+		params := buildParams()
+		params.providers["claude"] = config.ProviderSpec{Command: "echo", PromptMode: "none", SupportsACP: true}
+		a := &config.Agent{Name: "witness", Scope: "city", Provider: "claude", Session: "acp"}
+		tp, err := resolveTemplate(params, a, a.QualifiedName(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(tp.Prompt, "Skills available to this session") {
+			t.Errorf("acp agent got the appendix despite stage-1/stage-2 ineligibility:\n%s", tp.Prompt)
+		}
+	})
+
+	t.Run("subprocess workdir differs skipped", func(t *testing.T) {
+		// subprocess is stage-1-eligible (host scope root is
+		// reachable) but NOT stage-2-eligible (no PreStart execution).
+		// When WorkDir != scope root, stage 1 delivers to the scope
+		// root but not the workdir, and stage 2 doesn't run — so the
+		// agent's workdir sink stays empty. No appendix.
+		params := buildParams()
+		params.sessionProvider = "subprocess"
+		a := &config.Agent{
+			Name:     "sub",
+			Scope:    "city",
+			Provider: "claude",
+			WorkDir:  ".gc/worktrees/sub-1",
+		}
+		tp, err := resolveTemplate(params, a, a.QualifiedName(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(tp.Prompt, "Skills available to this session") {
+			t.Errorf("subprocess worktree session got the appendix despite stage-2 ineligibility:\n%s", tp.Prompt)
+		}
+	})
+
+	t.Run("subprocess workdir at scope root gets appendix", func(t *testing.T) {
+		// Same subprocess runtime, but WorkDir is the scope root —
+		// stage 1 delivers directly to the workdir-equivalent sink.
+		params := buildParams()
+		params.sessionProvider = "subprocess"
+		a := &config.Agent{Name: "sub", Scope: "city", Provider: "claude"}
+		tp, err := resolveTemplate(params, a, a.QualifiedName(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(tp.Prompt, "Skills available to this session") {
+			t.Errorf("subprocess@scope-root should get the appendix:\n%s", tp.Prompt)
+		}
+	})
 }

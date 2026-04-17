@@ -255,17 +255,24 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 		prompt = beacon
 	}
 
-	// Step 9b: Append the assigned-skills appendix when the agent opts
-	// in (default) AND has a vendor sink. Running at this point means
-	// the appendix lands at the very end of the prompt, after any
-	// template content but before any later modifications. See
-	// engdocs/proposals/skill-materialization.md § "Assigned-skills
-	// prompt appendix".
+	// Step 9b: Append the assigned-skills appendix when the agent
+	// has a vendor sink, hasn't opted out, AND the runtime actually
+	// delivers the skills to the session workdir. The appendix claims
+	// "these skills are materialized in your provider's skill
+	// directory and load automatically" — that claim has to match
+	// reality, so we gate on the same availability conditions as
+	// materialization itself:
 	//
-	// The skill integration helpers gate on sink + opt-out themselves;
-	// here we just pipe the agent's catalog through. Stage-2 eligibility
-	// is NOT required — the appendix is helpful for tmux sessions too
-	// even when their work_dir equals the scope root.
+	//   - Stage-1-eligible runtime + workdir == scope root: stage 1
+	//     wrote the sink into the scope root the agent sees.
+	//   - Stage-2-eligible runtime (regardless of workdir): the
+	//     session PreStart invokes `gc internal materialize-skills`
+	//     into the session workdir before the agent starts.
+	//
+	// Agents for which neither path delivers (ACP, k8s, hybrid,
+	// subprocess with WorkDir ≠ scope root — because subprocess
+	// doesn't execute PreStart) get no appendix; we'd be lying to
+	// them. Discovered via the pass-1 Codex review.
 	if effectiveInjectAssignedSkills(cfgAgent) {
 		wsProvider := ""
 		if p.workspace != nil {
@@ -273,19 +280,25 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 		}
 		provider := effectiveAgentProvider(cfgAgent, wsProvider)
 		if _, ok := materialize.VendorSink(provider); ok {
-			var agentCat materialize.AgentCatalog
-			if cfgAgent.SkillsDir != "" {
-				// Best-effort: a transient I/O failure loading the
-				// agent catalog shouldn't break the prompt render.
-				// The error is already surfaced via
-				// effectiveSkillsForAgent's stderr path earlier in
-				// the call graph.
-				if c, err := materialize.LoadAgentCatalog(cfgAgent.SkillsDir); err == nil {
-					agentCat = c
+			scopeRoot := agentScopeRoot(cfgAgent, p.cityPath, p.rigs)
+			canonWorkDir := canonicaliseFilePath(workDir, p.cityPath)
+			stage1Delivers := canStage1Materialize(p.sessionProvider, cfgAgent) && canonWorkDir == scopeRoot
+			stage2Delivers := isStage2EligibleSession(p.sessionProvider, cfgAgent)
+			if stage1Delivers || stage2Delivers {
+				var agentCat materialize.AgentCatalog
+				if cfgAgent.SkillsDir != "" {
+					// Best-effort: a transient I/O failure loading the
+					// agent catalog shouldn't break the prompt render.
+					// The error is already surfaced via
+					// effectiveSkillsForAgent's stderr path earlier in
+					// the call graph.
+					if c, err := materialize.LoadAgentCatalog(cfgAgent.SkillsDir); err == nil {
+						agentCat = c
+					}
 				}
-			}
-			if frag := buildAssignedSkillsPromptFragment(cfgAgent, p.skillCatalog, agentCat); frag != "" {
-				prompt = prompt + "\n\n" + frag
+				if frag := buildAssignedSkillsPromptFragment(cfgAgent, p.skillCatalog, agentCat); frag != "" {
+					prompt = prompt + "\n\n" + frag
+				}
 			}
 		}
 	}

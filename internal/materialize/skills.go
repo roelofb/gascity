@@ -544,7 +544,11 @@ func readSkillDescription(path string) string {
 	if err != nil {
 		return ""
 	}
-	text := string(data)
+	// Strip optional UTF-8 BOM before the frontmatter check. Editors
+	// on Windows and some export pipelines prepend EF BB BF; without
+	// this the prefix check would silently fail and every exported
+	// SKILL.md would surface with a blank description.
+	text := strings.TrimPrefix(string(data), "\ufeff")
 	// Require frontmatter to begin on the first line.
 	if !strings.HasPrefix(text, "---\n") && !strings.HasPrefix(text, "---\r\n") {
 		return ""
