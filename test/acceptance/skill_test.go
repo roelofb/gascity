@@ -162,4 +162,3 @@ func TestSkillListIncludesBootstrap(t *testing.T) {
 		t.Error("skill list missing 'gc-work' from core bootstrap pack — Phase 3C wiring may be broken")
 	}
 }
-
