@@ -646,20 +646,6 @@ func commitStartResultTraced(
 	return true
 }
 
-func clearPendingCreateClaim(session *beads.Bead, store beads.Store) error {
-	if !shouldRollbackPendingCreate(session) || store == nil {
-		return nil
-	}
-	if err := store.SetMetadata(session.ID, "pending_create_claim", ""); err != nil {
-		return err
-	}
-	if session.Metadata == nil {
-		session.Metadata = make(map[string]string)
-	}
-	session.Metadata["pending_create_claim"] = ""
-	return nil
-}
-
 func recoverRunningPendingCreate(
 	session *beads.Bead,
 	tp TemplateParams,
@@ -684,9 +670,14 @@ func recoverRunningPendingCreate(
 	if bdj, err := json.Marshal(prepared.coreBreakdown); err == nil {
 		coreBreakdown = string(bdj)
 	}
-	now := time.Time{}
+	// Fall back to wall clock if the caller didn't inject one — the marker
+	// is load-bearing for the post-create sweep guard, so leaving it unset
+	// would re-open the crash/recovery spin-loop window.
+	var now time.Time
 	if clk != nil {
 		now = clk.Now()
+	} else {
+		now = time.Now()
 	}
 	metadata := sessionpkg.CommitStartedPatch(sessionpkg.CommitStartedPatchInput{
 		CoreHash:      prepared.coreHash,

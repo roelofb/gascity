@@ -1009,6 +1009,52 @@ func TestExecutePlannedStartsClearsLegacyDrainAckAfterProviderStartBeforeMetadat
 	}
 }
 
+// recoverRunningPendingCreate heals an already-active bead whose runtime
+// is alive but whose pending_create_claim flag was left set (typically
+// after a partial write on a prior tick). The heal MUST stamp a fresh
+// creation_complete_at alongside the claim clear, otherwise the sweep's
+// post-create guard treats the healed bead as stale and the bead can be
+// closed on the next tick if the runtime briefly dies — re-opening the
+// spin loop this PR is meant to close.
+func TestRecoverRunningPendingCreate_StampsCreationCompleteAtForAlreadyActive(t *testing.T) {
+	store := beads.NewMemStore()
+	bead, err := store.Create(beads.Bead{
+		Title:  "helper",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name":         "sky",
+			"pending_create_claim": "true",
+			"state":                "active",
+			"state_reason":         "creation_complete",
+			// No creation_complete_at from the original start — the
+			// exact legacy shape recovery needs to heal.
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.City{Agents: []config.Agent{{Name: "helper"}}}
+	tp := TemplateParams{SessionName: "sky", TemplateName: "helper"}
+	clkTime := time.Date(2026, 3, 18, 12, 0, 1, 0, time.UTC)
+
+	if !recoverRunningPendingCreate(&bead, tp, cfg, store, &clock.Fake{Time: clkTime}, nil) {
+		t.Fatal("recoverRunningPendingCreate returned false, want true")
+	}
+
+	got, err := store.Get(bead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata["pending_create_claim"] != "" {
+		t.Fatalf("pending_create_claim = %q, want cleared", got.Metadata["pending_create_claim"])
+	}
+	if got.Metadata["creation_complete_at"] != clkTime.Format(time.RFC3339) {
+		t.Fatalf("creation_complete_at = %q, want %q — sweep guard would treat healed bead as stale without this stamp",
+			got.Metadata["creation_complete_at"], clkTime.Format(time.RFC3339))
+	}
+}
+
 // A successful atomic start batch must land state=active, state_reason,
 // creation_complete_at, AND the pending_create_claim clear together —
 // downstream readers (e.g. the pool bead sweep) rely on this atomicity so

@@ -133,9 +133,15 @@ func CommitStartedPatch(input CommitStartedPatchInput) MetadataPatch {
 	if input.ConfirmState {
 		patch["state"] = string(StateActive)
 		patch["state_reason"] = "creation_complete"
-		if !input.Now.IsZero() {
-			patch["creation_complete_at"] = input.Now.UTC().Format(time.RFC3339)
-		}
+	}
+	// creation_complete_at tracks when the runtime was last confirmed started.
+	// Stamp it whenever Now is non-zero — the ConfirmState path marks the
+	// fresh transition from creating/asleep; the recovery path (already-
+	// active bead with pending_create_claim=true) re-confirms an existing
+	// start, so it needs the same marker so the post-create sweep guard
+	// doesn't treat the healed bead as stale on subsequent ticks.
+	if !input.Now.IsZero() {
+		patch["creation_complete_at"] = input.Now.UTC().Format(time.RFC3339)
 	}
 	if input.ClearSleepReason {
 		patch["sleep_reason"] = ""

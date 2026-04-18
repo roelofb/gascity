@@ -319,6 +319,55 @@ func TestSweepUndesiredPoolSessionBeads_SweepsActiveWithoutCreationCompleteAt(t 
 	}
 }
 
+// Recovery of an already-active bead (recoverRunningPendingCreate path:
+// state=active + pending_create_claim=true + alive runtime) must produce
+// a fresh creation_complete_at so the healed bead stays protected in the
+// pre-wake window on the following tick. This test asserts the sweep's
+// side of that contract — a state=active bead with a fresh
+// creation_complete_at and empty last_woke_at survives the sweep.
+func TestSweepUndesiredPoolSessionBeads_SkipsRecoveredActiveBead(t *testing.T) {
+	store := beads.NewMemStore()
+	bead, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:worker"},
+		Metadata: map[string]string{
+			"session_name":         "worker-bd-recovered",
+			"template":             "worker",
+			"agent_name":           "worker",
+			"pool_slot":            "1",
+			poolManagedMetadataKey: boolMetadata(true),
+			// Post-recovery shape: state was already active, recovery just
+			// cleared pending_create_claim and stamped a fresh marker.
+			"state":                "active",
+			"state_reason":         "creation_complete",
+			"creation_complete_at": time.Now().UTC().Format(time.RFC3339),
+			"last_woke_at":         "",
+			// Historical counters survive recovery.
+			"wake_attempts":      "1",
+			"continuation_epoch": "1",
+			"generation":         "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sessionBeads := newSessionBeadSnapshot([]beads.Bead{bead})
+
+	closed := sweepUndesiredPoolSessionBeads(
+		store,
+		sessionBeads,
+		nil,
+		nil,
+		&config.City{Agents: []config.Agent{{Name: "worker", MinActiveSessions: intPtr(0), MaxActiveSessions: intPtr(2)}}},
+		runtime.NewFake(),
+		false,
+	)
+	if closed != 0 {
+		t.Fatalf("closed = %d, want 0 — recovered active bead with fresh marker must survive pre-wake", closed)
+	}
+}
+
 // Crashed-then-recently-restarted beads: wake_attempts/churn_count are
 // preserved across a successful restart (CommitStartedPatch does not reset
 // them), so the post-create guard CANNOT be keyed on those counters or a
