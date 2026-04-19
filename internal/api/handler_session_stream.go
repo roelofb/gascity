@@ -464,38 +464,7 @@ func (s *Server) streamSessionPeekRaw(ctx context.Context, w http.ResponseWriter
 	var seq uint64
 	var lastPeekPendingID string
 
-	emitPeek := func() {
-		output, err := handle.Peek(ctx, 100)
-		if errors.Is(err, session.ErrSessionInactive) {
-			return
-		}
-		if err != nil || output == lastOutput {
-			return
-		}
-		lastOutput = output
-		seq++
-
-		if output == "" {
-			return
-		}
-
-		fakeMsg, _ := json.Marshal(map[string]interface{}{
-			"role": "assistant",
-			"content": []map[string]string{
-				{"type": "text", "text": output},
-			},
-		})
-		data, err := json.Marshal(sessionRawTranscriptResponse{
-			ID:       info.ID,
-			Template: info.Template,
-			Format:   "raw",
-			Messages: []json.RawMessage{fakeMsg},
-		})
-		if err != nil {
-			return
-		}
-		writeSSE(w, "message", seq, data)
-
+	emitPending := func() {
 		pending, pErr := handle.Pending(ctx)
 		if pErr == nil && pending != nil && pending.RequestID != lastPeekPendingID {
 			lastPeekPendingID = pending.RequestID
@@ -505,6 +474,38 @@ func (s *Server) streamSessionPeekRaw(ctx context.Context, w http.ResponseWriter
 		} else if pending == nil && lastPeekPendingID != "" {
 			lastPeekPendingID = ""
 		}
+	}
+
+	emitPeek := func() {
+		output, err := handle.Peek(ctx, 100)
+		if errors.Is(err, session.ErrSessionInactive) {
+			return
+		}
+		if err != nil {
+			return
+		}
+		if output != lastOutput {
+			lastOutput = output
+			seq++
+			if output != "" {
+				fakeMsg, _ := json.Marshal(map[string]interface{}{
+					"role": "assistant",
+					"content": []map[string]string{
+						{"type": "text", "text": output},
+					},
+				})
+				data, err := json.Marshal(sessionRawTranscriptResponse{
+					ID:       info.ID,
+					Template: info.Template,
+					Format:   "raw",
+					Messages: []json.RawMessage{fakeMsg},
+				})
+				if err == nil {
+					writeSSE(w, "message", seq, data)
+				}
+			}
+		}
+		emitPending()
 	}
 
 	emitPeek()
