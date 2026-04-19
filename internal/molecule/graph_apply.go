@@ -129,6 +129,9 @@ func buildRecipeApplyPlan(recipe *formula.Recipe, opts Options) (*beads.GraphApp
 		if err != nil {
 			return nil, false, "", err
 		}
+		if opts.DeferAssignees {
+			deferGraphNodeRouting(&node)
+		}
 		if step.IsRoot {
 			rootIncluded = true
 			if !opts.PreserveRootType && step.Metadata["gc.kind"] != "workflow" {
@@ -220,6 +223,33 @@ func buildRecipeApplyPlan(recipe *formula.Recipe, opts Options) (*beads.GraphApp
 	}
 
 	return plan, graphWorkflow, rootKey, nil
+}
+
+func deferGraphNodeRouting(node *beads.GraphApplyNode) {
+	if node.Assignee != "" {
+		ensureGraphNodeMetadata(node)
+		node.Metadata[DeferredAssigneeMetadataKey] = node.Assignee
+		node.Assignee = ""
+		node.AssignAfterCreate = false
+	}
+	deferGraphNodeMetadataValue(node, "gc.routed_to", DeferredRoutedToMetadataKey)
+	deferGraphNodeMetadataValue(node, "gc.execution_routed_to", DeferredExecutionRoutedToMetadataKey)
+}
+
+func deferGraphNodeMetadataValue(node *beads.GraphApplyNode, sourceKey, deferredKey string) {
+	if node.Metadata == nil {
+		return
+	}
+	if value := node.Metadata[sourceKey]; value != "" {
+		node.Metadata[deferredKey] = value
+		delete(node.Metadata, sourceKey)
+	}
+}
+
+func ensureGraphNodeMetadata(node *beads.GraphApplyNode) {
+	if node.Metadata == nil {
+		node.Metadata = make(map[string]string, 1)
+	}
 }
 
 func buildFragmentApplyPlan(store beads.Store, recipe *formula.FragmentRecipe, opts FragmentOptions) (*beads.GraphApplyPlan, error) {

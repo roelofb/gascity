@@ -45,7 +45,30 @@ type Options struct {
 	// coercing legacy non-workflow roots to molecule containers. Attach uses
 	// this for executable sub-DAG roots such as retry attempts.
 	PreserveRootType bool
+
+	// DeferAssignees creates assignable beads without an assignee and stores
+	// the intended assignee in metadata for later activation.
+	DeferAssignees bool
 }
+
+const (
+	// DeferredAssigneeMetadataKey stores an assignee withheld during speculative
+	// molecule creation. Activating the molecule restores the value as Assignee.
+	DeferredAssigneeMetadataKey = "gc.deferred_assignee"
+
+	// DeferredRoutedToMetadataKey stores gc.routed_to withheld during
+	// speculative molecule creation.
+	DeferredRoutedToMetadataKey = "gc.deferred_routed_to"
+
+	// DeferredExecutionRoutedToMetadataKey stores gc.execution_routed_to withheld
+	// during speculative molecule creation.
+	DeferredExecutionRoutedToMetadataKey = "gc.deferred_execution_routed_to"
+
+	// DeferredTypeMetadataKey stores the bead type withheld during speculative
+	// molecule creation. Speculative actionable work is created as a ready-
+	// excluded type and restored on activation.
+	DeferredTypeMetadataKey = "gc.deferred_type"
+)
 
 // FragmentOptions configures instantiation of a rootless recipe fragment into
 // an existing workflow root.
@@ -339,7 +362,7 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 	if len(recipe.Steps) == 0 {
 		return nil, fmt.Errorf("recipe %q has no steps", recipe.Name)
 	}
-	if IsGraphApplyEnabled() {
+	if !opts.DeferAssignees && IsGraphApplyEnabled() {
 		if applier, ok := store.(beads.GraphApplyStore); ok {
 			return instantiateViaGraphApply(ctx, applier, recipe, opts)
 		}
@@ -364,6 +387,9 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 		}
 
 		b := stepToBead(step, vars, priorityOverride)
+		if opts.DeferAssignees {
+			deferBeadRouting(&b)
+		}
 		hasFutureBlocker := false
 		for _, dep := range recipe.Deps {
 			if dep.StepID != step.ID || dep.Type == "parent-child" {
@@ -699,6 +725,41 @@ func stepToBead(step formula.RecipeStep, vars map[string]string, priorityOverrid
 	}
 
 	return b
+}
+
+func deferBeadRouting(b *beads.Bead) {
+	beadType := b.Type
+	if beadType == "" {
+		beadType = "task"
+	}
+	if !beads.IsReadyExcludedType(beadType) {
+		ensureBeadMetadata(b)
+		b.Metadata[DeferredTypeMetadataKey] = beadType
+		b.Type = "gate"
+	}
+	if b.Assignee != "" {
+		ensureBeadMetadata(b)
+		b.Metadata[DeferredAssigneeMetadataKey] = b.Assignee
+		b.Assignee = ""
+	}
+	deferBeadMetadataValue(b, "gc.routed_to", DeferredRoutedToMetadataKey)
+	deferBeadMetadataValue(b, "gc.execution_routed_to", DeferredExecutionRoutedToMetadataKey)
+}
+
+func deferBeadMetadataValue(b *beads.Bead, sourceKey, deferredKey string) {
+	if b.Metadata == nil {
+		return
+	}
+	if value := b.Metadata[sourceKey]; value != "" {
+		b.Metadata[deferredKey] = value
+		delete(b.Metadata, sourceKey)
+	}
+}
+
+func ensureBeadMetadata(b *beads.Bead) {
+	if b.Metadata == nil {
+		b.Metadata = make(map[string]string, 1)
+	}
 }
 
 // substituteLabels applies variable substitution to each label.
