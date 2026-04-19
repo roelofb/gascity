@@ -655,6 +655,13 @@ type attachmentCachingProvider struct {
 	cache map[string]bool
 }
 
+func (p *attachmentCachingProvider) GetMeta(name, key string) (string, error) {
+	if p.Provider == nil {
+		return "", nil
+	}
+	return p.Provider.GetMeta(name, key)
+}
+
 func (p *attachmentCachingProvider) IsAttached(name string) bool {
 	if v, ok := p.cache[name]; ok {
 		return v
