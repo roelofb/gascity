@@ -716,7 +716,7 @@ func openStoreAtForCity(storePath, cityPath string) (beads.Store, error) {
 		runtimeCityPath = cityForStoreDir(storePath)
 	}
 	scopeRoot := resolveStoreScopeRoot(runtimeCityPath, storePath)
-	provider := rawBeadsProvider(runtimeCityPath)
+	provider := rawBeadsProviderForScope(scopeRoot, runtimeCityPath)
 	if strings.HasPrefix(provider, "exec:") {
 		target, err := resolveConfiguredExecStoreTarget(runtimeCityPath, scopeRoot)
 		if err != nil {

@@ -291,6 +291,46 @@ func cityUsesBdStoreContract(cityPath string) bool {
 	return providerUsesBdStoreContract(rawBeadsProvider(cityPath))
 }
 
+func rawBeadsProviderForScope(scopeRoot, cityPath string) string {
+	runtimeCityPath := cityPath
+	if runtimeCityPath == "" {
+		runtimeCityPath = cityForStoreDir(scopeRoot)
+	}
+	provider := rawBeadsProvider(runtimeCityPath)
+	resolvedScopeRoot := resolveStoreScopeRoot(runtimeCityPath, scopeRoot)
+	if samePath(resolvedScopeRoot, runtimeCityPath) {
+		return provider
+	}
+	// Mixed-provider workspaces can keep legacy bd-backed rigs under a
+	// file-backed city (and vice versa). Prefer explicit scope-local store
+	// markers over the city default so scoped commands keep talking to the
+	// rig's actual beads backend.
+	if scopeUsesBdStoreContract(resolvedScopeRoot) {
+		return "bd"
+	}
+	if scopeUsesFileStoreContract(resolvedScopeRoot) {
+		return "file"
+	}
+	return provider
+}
+
+func scopeUsesBdStoreContract(scopeRoot string) bool {
+	for _, marker := range []string{
+		filepath.Join(scopeRoot, ".beads", "metadata.json"),
+		filepath.Join(scopeRoot, ".beads", "config.yaml"),
+	} {
+		if _, err := os.Stat(marker); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func scopeUsesFileStoreContract(scopeRoot string) bool {
+	_, err := os.Stat(filepath.Join(scopeRoot, ".gc", "beads.json"))
+	return err == nil
+}
+
 // beadsProvider returns the bead store provider name for lifecycle operations.
 // Maps "bd" → "exec:<cityPath>/.gc/system/packs/bd/assets/scripts/gc-beads-bd.sh"
 // so all lifecycle operations route through the exec: protocol. Other providers
