@@ -2343,8 +2343,8 @@ func validateNamedSessions(cfg *City, requireBackingTemplate bool) error {
 		}
 		if !validNamedSessionTemplate.MatchString(s.Template) {
 			return fmt.Errorf(
-				"named_session[%d]: template %q must be an agent template name like %q or %q",
-				i, s.Template, "mayor", "employees.penny",
+				"named_session[%d]: template %q must be an agent template name like %q or a binding-qualified name like %q",
+				i, s.Template, "agent", "binding.agent",
 			)
 		}
 		if s.Name != "" && !validAgentName.MatchString(s.Name) {
