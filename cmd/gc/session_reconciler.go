@@ -873,8 +873,14 @@ func reconcileSessionBeadsTraced(
 		// work, so we re-query the live store here and at the drain-ack
 		// handler above — never trust a stale snapshot for a decision that
 		// closes a bead.
+		// Only pool-managed sessions are disposable after a completed drain.
+		// Singleton/named controller-managed identities must keep the same
+		// bead so later wake/restart happens in place instead of minting a
+		// fresh canonical owner. Hoist isPoolManagedSessionBead up here so
+		// non-pool sessions skip the live-store query entirely.
 		hasAssignedWork := false
-		if !shouldWake && !target.alive && isPoolSessionSlotFreeable(*target.session) {
+		poolFreeable := !shouldWake && !target.alive && isPoolSessionSlotFreeable(*target.session) && isPoolManagedSessionBead(*target.session)
+		if poolFreeable {
 			var assignedErr error
 			hasAssignedWork, assignedErr = sessionHasOpenAssignedWork(store, *target.session)
 			if assignedErr != nil {
@@ -882,19 +888,23 @@ func reconcileSessionBeadsTraced(
 				hasAssignedWork = true
 			}
 		}
-		if !shouldWake && !target.alive && isPoolSessionSlotFreeable(*target.session) && !hasAssignedWork && isPoolManagedSessionBead(*target.session) {
-			// Only pool-managed sessions are disposable after a completed drain.
-			// Singleton/named controller-managed identities must keep the same
-			// bead so later wake/restart happens in place instead of minting a
-			// fresh canonical owner.
-			//
+		if poolFreeable && !hasAssignedWork {
 			// Close directly rather than via closeSessionBeadIfUnassigned: the
 			// live sessionHasOpenAssignedWork query above already established
 			// hasAssignedWork=false. Routing through closeSessionBeadIfUnassigned
 			// would re-consult ownershipWorkIndex (the stale pre-tick snapshot)
 			// and let it veto the close — exactly the behaviour the PR set out
 			// to kill in the drain-ack handler.
-			closeBead(store, target.session.ID, "drained", clk.Now().UTC(), stderr)
+			//
+			// Preserve the original sleep_reason (idle / idle-timeout / drained)
+			// on the closed bead for forensic fidelity; fall back to "drained"
+			// when the metadata is missing. Ops can then distinguish a natural
+			// idle-timeout recycle from an explicit drain in the closed record.
+			closeReason := strings.TrimSpace(target.session.Metadata["sleep_reason"])
+			if closeReason == "" {
+				closeReason = "drained"
+			}
+			closeBead(store, target.session.ID, closeReason, clk.Now().UTC(), stderr)
 		}
 	}
 

@@ -592,6 +592,142 @@ func TestReconcileSessionBeads_DrainAckLiveStoreErrorFailsClosed(t *testing.T) {
 	}
 }
 
+// TestReconcileSessionBeads_CloseGateLiveStoreErrorKeepsSlot guards the
+// mirror-image fail-closed guard in the asleep-idle close gate. When
+// sessionHasOpenAssignedWork errors during the close-gate check, the gate
+// must treat hasAssignedWork as true (fail-closed) and leave the bead
+// open. Without this guard a transient store blip would silently close a
+// pool slot whose assignment status was unverifiable.
+func TestReconcileSessionBeads_CloseGateLiveStoreErrorKeepsSlot(t *testing.T) {
+	env := newReconcilerTestEnv()
+	env.cfg = &config.City{
+		Agents: []config.Agent{{Name: "worker"}},
+	}
+	env.addDesired("worker", "worker", false) // NOT running
+	session := env.createSessionBead("worker", "worker")
+	env.setSessionMetadata(&session, map[string]string{
+		"state":              "asleep",
+		"sleep_reason":       "idle",
+		poolManagedMetadataKey: boolMetadata(true),
+	})
+
+	erroring := &listErrStore{Store: env.store, err: fmt.Errorf("store is unavailable")}
+
+	reconcileSessionBeadsAtPath(
+		context.Background(),
+		"",
+		[]beads.Bead{session},
+		env.desiredState,
+		map[string]bool{"worker": true},
+		env.cfg,
+		env.sp,
+		erroring,
+		newFakeDrainOps(),
+		nil,
+		nil,
+		nil,
+		env.dt,
+		nil,
+		false,
+		nil,
+		"",
+		nil,
+		env.clk,
+		env.rec,
+		0,
+		0,
+		&env.stdout,
+		&env.stderr,
+	)
+
+	got, err := env.store.Get(session.ID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", session.ID, err)
+	}
+	if got.Status == "closed" {
+		t.Fatalf("status = %q, want open — close-gate live-query error must fail closed (hasAssignedWork=true) so the pool slot stays open until the store can confirm no assignments", got.Status)
+	}
+}
+
+// TestReconcileSessionBeads_CloseGatePreservesSleepReason verifies that the
+// close gate carries the session's existing sleep_reason (idle,
+// idle-timeout, drained) into the closed bead's close reason. Losing this
+// distinction in closed records erases the forensic difference between an
+// idle-timeout recycle and an explicit drain.
+func TestReconcileSessionBeads_CloseGatePreservesSleepReason(t *testing.T) {
+	cases := []struct {
+		name        string
+		sleepReason string
+		wantReason  string
+	}{
+		{"idle", "idle", "idle"},
+		{"idle-timeout", "idle-timeout", "idle-timeout"},
+		{"drained-reason", "drained", "drained"},
+		{"missing-reason", "", "drained"}, // fallback
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newReconcilerTestEnv()
+			env.cfg = &config.City{
+				Agents: []config.Agent{{Name: "worker"}},
+			}
+			env.addDesired("worker", "worker", false)
+			session := env.createSessionBead("worker", "worker")
+			meta := map[string]string{
+				"state":              "asleep",
+				poolManagedMetadataKey: boolMetadata(true),
+			}
+			if tc.sleepReason != "" {
+				meta["sleep_reason"] = tc.sleepReason
+			} else {
+				// Drained state still qualifies as freeable via
+				// isDrainedSessionBead; use that so the close gate fires
+				// with no sleep_reason set.
+				meta["state"] = "drained"
+			}
+			env.setSessionMetadata(&session, meta)
+
+			reconcileSessionBeadsAtPath(
+				context.Background(),
+				"",
+				[]beads.Bead{session},
+				env.desiredState,
+				map[string]bool{"worker": true},
+				env.cfg,
+				env.sp,
+				env.store,
+				newFakeDrainOps(),
+				nil,
+				nil,
+				nil,
+				env.dt,
+				nil,
+				false,
+				nil,
+				"",
+				nil,
+				env.clk,
+				env.rec,
+				0,
+				0,
+				&env.stdout,
+				&env.stderr,
+			)
+
+			got, err := env.store.Get(session.ID)
+			if err != nil {
+				t.Fatalf("Get(%s): %v", session.ID, err)
+			}
+			if got.Status != "closed" {
+				t.Fatalf("status = %q, want closed", got.Status)
+			}
+			if got.Metadata["close_reason"] != tc.wantReason {
+				t.Fatalf("close_reason = %q, want %q — close gate must preserve the originating sleep_reason for forensic fidelity", got.Metadata["close_reason"], tc.wantReason)
+			}
+		})
+	}
+}
+
 func TestReconcileSessionBeads_DrainAckResumeModePreservesSessionIdentity(t *testing.T) {
 	env := newReconcilerTestEnv()
 	env.cfg = &config.City{
