@@ -216,9 +216,9 @@ func writeE2EAgentSections(b *strings.Builder, agents []e2eAgent) {
 			fmt.Fprintf(b, "nudge = %s\n", quote(a.Nudge))
 		}
 		if a.Pool == nil {
-			// E2E helpers expect a plain test agent to behave like a singleton
-			// session unless the test explicitly opts into pool semantics.
-			fmt.Fprintf(b, "max_active_sessions = 1\n")
+			// Plain E2E agents are kept resident by the named session below.
+			// Leave generic template capacity unbounded so config rewrites do
+			// not also carry legacy singleton-pool semantics.
 			if strings.TrimSpace(a.IdleTimeout) == "" {
 				fmt.Fprintf(b, "idle_timeout = %s\n", quote("1h"))
 			}

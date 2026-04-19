@@ -1119,6 +1119,18 @@ func TestCommandEnvLookupDirUsesRegisteredPathArg(t *testing.T) {
 	}
 }
 
+func TestRenderE2ETomlPlainAgentUsesNamedSessionWithoutSingletonCap(t *testing.T) {
+	toml := renderE2EToml(e2eCity{
+		Agents: []e2eAgent{{Name: "worker", StartCommand: "sleep 3600"}},
+	})
+	if !strings.Contains(toml, "[[named_session]]\ntemplate = \"worker\"\nmode = \"always\"") {
+		t.Fatalf("rendered TOML missing named session:\n%s", toml)
+	}
+	if strings.Contains(toml, "max_active_sessions = 1") {
+		t.Fatalf("plain E2E agent should not render singleton cap:\n%s", toml)
+	}
+}
+
 func TestNewIsolatedToolEnvSeedsLocalDoltIdentity(t *testing.T) {
 	env := newIsolatedToolEnv(t, true)
 	got := parseEnvList(env)
