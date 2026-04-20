@@ -1455,23 +1455,25 @@ func TestDoInitSuccess(t *testing.T) {
 		t.Errorf("pack.toml missing schema 2:\n%s", packToml)
 	}
 
-	// Verify written config parses correctly.
-	data := f.Files[filepath.Join("/bright-lights", "city.toml")]
-	cfg, err := config.Parse(data)
+	// Verify the composed config loads correctly from pack.toml + city.toml.
+	// agents + named_session live in pack.toml (pack-first); workspace name
+	// lives in .gc/site.toml as the machine-local binding.
+	cfg, err := loadCityConfigFS(f, filepath.Join("/bright-lights", "city.toml"))
 	if err != nil {
-		t.Fatalf("parsing written config: %v", err)
+		t.Fatalf("loading written config: %v", err)
 	}
-	if cfg.Workspace.Name != "bright-lights" {
-		t.Errorf("Workspace.Name = %q, want %q", cfg.Workspace.Name, "bright-lights")
+	if cfg.ResolvedWorkspaceName != "bright-lights" {
+		t.Errorf("ResolvedWorkspaceName = %q, want %q", cfg.ResolvedWorkspaceName, "bright-lights")
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
+	explicit := explicitAgents(cfg.Agents)
+	if len(explicit) != 1 {
+		t.Fatalf("len(explicitAgents) = %d, want 1", len(explicit))
 	}
-	if cfg.Agents[0].Name != "mayor" {
-		t.Errorf("Agents[0].Name = %q, want %q", cfg.Agents[0].Name, "mayor")
+	if explicit[0].Name != "mayor" {
+		t.Errorf("explicitAgents[0].Name = %q, want %q", explicit[0].Name, "mayor")
 	}
-	if cfg.Agents[0].PromptTemplate != "agents/mayor/prompt.template.md" {
-		t.Errorf("Agents[0].PromptTemplate = %q, want %q", cfg.Agents[0].PromptTemplate, "agents/mayor/prompt.template.md")
+	if !strings.HasSuffix(explicit[0].PromptTemplate, filepath.Join("agents", "mayor", "prompt.template.md")) {
+		t.Errorf("explicitAgents[0].PromptTemplate = %q, want suffix %q", explicit[0].PromptTemplate, filepath.Join("agents", "mayor", "prompt.template.md"))
 	}
 }
 
@@ -1484,9 +1486,21 @@ func TestDoInitWritesExpectedTOML(t *testing.T) {
 		t.Fatalf("doInit = %d, want 0; stderr: %s", code, stderr.String())
 	}
 
+	// city.toml keeps only the runtime-local [workspace] (empty in the
+	// default mayor-only path). workspace.name lives in .gc/site.toml.
 	got := string(f.Files[filepath.Join("/bright-lights", "city.toml")])
 	want := `[workspace]
+`
+	if got != want {
+		t.Errorf("city.toml content:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+
+	// pack.toml owns the portable definition: [pack] + [[agent]] mayor +
+	// [[named_session]] mayor (pack-first scaffold from tutorial 01).
+	packGot := string(f.Files[filepath.Join("/bright-lights", "pack.toml")])
+	packWant := `[pack]
 name = "bright-lights"
+schema = 2
 
 [[agent]]
 name = "mayor"
@@ -1495,15 +1509,6 @@ prompt_template = "agents/mayor/prompt.template.md"
 [[named_session]]
 template = "mayor"
 mode = "always"
-`
-	if got != want {
-		t.Errorf("city.toml content:\ngot:\n%s\nwant:\n%s", got, want)
-	}
-
-	packGot := string(f.Files[filepath.Join("/bright-lights", "pack.toml")])
-	packWant := `[pack]
-name = "bright-lights"
-schema = 2
 `
 	if packGot != packWant {
 		t.Errorf("pack.toml content:\ngot:\n%s\nwant:\n%s", packGot, packWant)
@@ -2003,23 +2008,30 @@ func TestDoInitWithWizardConfig(t *testing.T) {
 		t.Errorf("stdout missing wizard message: %q", out)
 	}
 
-	// Verify written config has one agent and provider.
+	// Verify written raw city.toml keeps the provider (runtime-local) and
+	// the composed config (city.toml + pack.toml) surfaces the mayor agent
+	// from the pack-first scaffold.
 	data := f.Files[filepath.Join("/bright-lights", "city.toml")]
-	cfg, err := config.Parse(data)
+	raw, err := config.Parse(data)
 	if err != nil {
 		t.Fatalf("parsing written config: %v", err)
 	}
-	if cfg.Workspace.Provider != "claude" {
-		t.Errorf("Workspace.Provider = %q, want %q", cfg.Workspace.Provider, "claude")
+	if raw.Workspace.Provider != "claude" {
+		t.Errorf("Workspace.Provider = %q, want %q", raw.Workspace.Provider, "claude")
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
+	cfg, err := loadCityConfigFS(f, filepath.Join("/bright-lights", "city.toml"))
+	if err != nil {
+		t.Fatalf("loading written config: %v", err)
 	}
-	if cfg.Agents[0].Name != "mayor" {
-		t.Errorf("Agents[0].Name = %q, want %q", cfg.Agents[0].Name, "mayor")
+	explicit := explicitAgents(cfg.Agents)
+	if len(explicit) != 1 {
+		t.Fatalf("len(explicitAgents) = %d, want 1", len(explicit))
 	}
-	if cfg.Agents[0].PromptTemplate != "agents/mayor/prompt.template.md" {
-		t.Errorf("Agents[0].PromptTemplate = %q, want %q", cfg.Agents[0].PromptTemplate, "agents/mayor/prompt.template.md")
+	if explicit[0].Name != "mayor" {
+		t.Errorf("explicitAgents[0].Name = %q, want %q", explicit[0].Name, "mayor")
+	}
+	if !strings.HasSuffix(explicit[0].PromptTemplate, filepath.Join("agents", "mayor", "prompt.template.md")) {
+		t.Errorf("explicitAgents[0].PromptTemplate = %q, want suffix %q", explicit[0].PromptTemplate, filepath.Join("agents", "mayor", "prompt.template.md"))
 	}
 	// Verify provider appears in TOML.
 	if !strings.Contains(string(data), `provider = "claude"`) {
@@ -2041,20 +2053,25 @@ func TestDoInitWithCustomCommand(t *testing.T) {
 		t.Fatalf("doInit = %d, want 0; stderr: %s", code, stderr.String())
 	}
 
-	// Verify written config has start_command and no provider.
+	// Verify raw city.toml carries start_command and no provider; the
+	// composed config then surfaces the mayor agent from pack.toml.
 	data := f.Files[filepath.Join("/bright-lights", "city.toml")]
-	cfg, err := config.Parse(data)
+	raw, err := config.Parse(data)
 	if err != nil {
 		t.Fatalf("parsing written config: %v", err)
 	}
-	if cfg.Workspace.StartCommand != "my-agent --auto" {
-		t.Errorf("Workspace.StartCommand = %q, want %q", cfg.Workspace.StartCommand, "my-agent --auto")
+	if raw.Workspace.StartCommand != "my-agent --auto" {
+		t.Errorf("Workspace.StartCommand = %q, want %q", raw.Workspace.StartCommand, "my-agent --auto")
 	}
-	if cfg.Workspace.Provider != "" {
-		t.Errorf("Workspace.Provider = %q, want empty", cfg.Workspace.Provider)
+	if raw.Workspace.Provider != "" {
+		t.Errorf("Workspace.Provider = %q, want empty", raw.Workspace.Provider)
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
+	cfg, err := loadCityConfigFS(f, filepath.Join("/bright-lights", "city.toml"))
+	if err != nil {
+		t.Fatalf("loading written config: %v", err)
+	}
+	if len(explicitAgents(cfg.Agents)) != 1 {
+		t.Fatalf("len(explicitAgents) = %d, want 1", len(explicitAgents(cfg.Agents)))
 	}
 }
 
@@ -2120,20 +2137,26 @@ func TestDoInitWithCustomTemplate(t *testing.T) {
 		t.Fatalf("doInit = %d, want 0; stderr: %s", code, stderr.String())
 	}
 
-	// Custom template → DefaultCity (one mayor, no provider).
+	// Custom template → DefaultCity (one mayor, no provider). The mayor
+	// agent lives in pack.toml after the pack-first scaffold split.
 	data := f.Files[filepath.Join("/my-city", "city.toml")]
-	cfg, err := config.Parse(data)
+	raw, err := config.Parse(data)
 	if err != nil {
 		t.Fatalf("parsing written config: %v", err)
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
+	if raw.Workspace.Provider != "" {
+		t.Errorf("Workspace.Provider = %q, want empty", raw.Workspace.Provider)
 	}
-	if cfg.Agents[0].Name != "mayor" {
-		t.Errorf("Agents[0].Name = %q, want %q", cfg.Agents[0].Name, "mayor")
+	cfg, err := loadCityConfigFS(f, filepath.Join("/my-city", "city.toml"))
+	if err != nil {
+		t.Fatalf("loading written config: %v", err)
 	}
-	if cfg.Workspace.Provider != "" {
-		t.Errorf("Workspace.Provider = %q, want empty", cfg.Workspace.Provider)
+	explicit := explicitAgents(cfg.Agents)
+	if len(explicit) != 1 {
+		t.Fatalf("len(explicitAgents) = %d, want 1", len(explicit))
+	}
+	if explicit[0].Name != "mayor" {
+		t.Errorf("explicitAgents[0].Name = %q, want %q", explicit[0].Name, "mayor")
 	}
 }
 
@@ -2304,35 +2327,41 @@ scale_check = "echo 3"
 		t.Errorf("stdout missing source filename: %q", out)
 	}
 
-	// Verify city.toml was written with updated name.
+	// Verify city.toml was written and the composed config carries the
+	// expected provider + pack-first agents.
 	data, err := os.ReadFile(filepath.Join(cityPath, "city.toml"))
 	if err != nil {
 		t.Fatalf("reading city.toml: %v", err)
 	}
-	cfg, err := config.Parse(data)
+	raw, err := config.Parse(data)
 	if err != nil {
 		t.Fatalf("parsing written config: %v", err)
 	}
-	if cfg.Workspace.Name != "bright-lights" {
-		t.Errorf("Workspace.Name = %q, want %q (should be overridden)", cfg.Workspace.Name, "bright-lights")
+	if raw.Workspace.Provider != "claude" {
+		t.Errorf("Workspace.Provider = %q, want %q", raw.Workspace.Provider, "claude")
 	}
-	if cfg.Workspace.Provider != "claude" {
-		t.Errorf("Workspace.Provider = %q, want %q", cfg.Workspace.Provider, "claude")
+	cfg, err := loadCityConfigFS(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"))
+	if err != nil {
+		t.Fatalf("loading written config: %v", err)
 	}
-	if len(cfg.Agents) != 2 {
-		t.Fatalf("len(Agents) = %d, want 2", len(cfg.Agents))
+	if cfg.ResolvedWorkspaceName != "bright-lights" {
+		t.Errorf("ResolvedWorkspaceName = %q, want %q (should be overridden)", cfg.ResolvedWorkspaceName, "bright-lights")
 	}
-	if cfg.Agents[1].Name != "worker" {
-		t.Errorf("Agents[1].Name = %q, want %q", cfg.Agents[1].Name, "worker")
+	explicit := explicitAgents(cfg.Agents)
+	if len(explicit) != 2 {
+		t.Fatalf("len(explicitAgents) = %d, want 2", len(explicit))
 	}
-	if cfg.Agents[1].MaxActiveSessions == nil {
-		t.Fatal("Agents[1].MaxActiveSessions is nil, want non-nil")
+	if explicit[1].Name != "worker" {
+		t.Errorf("explicitAgents[1].Name = %q, want %q", explicit[1].Name, "worker")
 	}
-	if *cfg.Agents[1].MaxActiveSessions != 5 {
-		t.Errorf("Agents[1].MaxActiveSessions = %d, want 5", *cfg.Agents[1].MaxActiveSessions)
+	if explicit[1].MaxActiveSessions == nil {
+		t.Fatal("explicitAgents[1].MaxActiveSessions is nil, want non-nil")
 	}
-	if cfg.Agents[0].PromptTemplate != "agents/mayor/prompt.template.md" {
-		t.Errorf("Agents[0].PromptTemplate = %q, want %q", cfg.Agents[0].PromptTemplate, "agents/mayor/prompt.template.md")
+	if *explicit[1].MaxActiveSessions != 5 {
+		t.Errorf("explicitAgents[1].MaxActiveSessions = %d, want 5", *explicit[1].MaxActiveSessions)
+	}
+	if !strings.HasSuffix(explicit[0].PromptTemplate, filepath.Join("agents", "mayor", "prompt.template.md")) {
+		t.Errorf("explicitAgents[0].PromptTemplate = %q, want suffix %q", explicit[0].PromptTemplate, filepath.Join("agents", "mayor", "prompt.template.md"))
 	}
 
 	packData, err := os.ReadFile(filepath.Join(cityPath, "pack.toml"))
@@ -2611,16 +2640,14 @@ func TestInitNameFlagWithFile(t *testing.T) {
 		t.Fatalf("cmdInitFromFileWithOptions = %d, want 0; stderr: %s", code, stderr.String())
 	}
 
-	data, err := os.ReadFile(filepath.Join(cityPath, "city.toml"))
+	// Workspace name now lives in .gc/site.toml (pack-first scaffold), so
+	// the effective identity comes from the composed site binding.
+	cfg, err := loadCityConfigFS(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"))
 	if err != nil {
-		t.Fatalf("reading city.toml: %v", err)
+		t.Fatalf("loading config: %v", err)
 	}
-	cfg, err := config.Parse(data)
-	if err != nil {
-		t.Fatalf("parsing config: %v", err)
-	}
-	if cfg.Workspace.Name != "my-file-name" {
-		t.Errorf("Workspace.Name = %q, want %q", cfg.Workspace.Name, "my-file-name")
+	if cfg.ResolvedWorkspaceName != "my-file-name" {
+		t.Errorf("ResolvedWorkspaceName = %q, want %q", cfg.ResolvedWorkspaceName, "my-file-name")
 	}
 }
 
@@ -2641,23 +2668,21 @@ func TestInitNameFlagWithBareInit(t *testing.T) {
 		t.Fatalf("doInit = %d, want 0; stderr: %s", code, stderr.String())
 	}
 
-	data, err := os.ReadFile(filepath.Join(cityPath, "city.toml"))
+	// Workspace name lives in .gc/site.toml (pack-first scaffold). The
+	// resolved identity derives from site binding.
+	cfg, err := loadCityConfigFS(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"))
 	if err != nil {
-		t.Fatalf("reading city.toml: %v", err)
+		t.Fatalf("loading config: %v", err)
 	}
-	cfg, err := config.Parse(data)
-	if err != nil {
-		t.Fatalf("parsing config: %v", err)
-	}
-	if cfg.Workspace.Name != "my-bare-name" {
-		t.Errorf("Workspace.Name = %q, want %q", cfg.Workspace.Name, "my-bare-name")
+	if cfg.ResolvedWorkspaceName != "my-bare-name" {
+		t.Errorf("ResolvedWorkspaceName = %q, want %q", cfg.ResolvedWorkspaceName, "my-bare-name")
 	}
 	packData, err := os.ReadFile(filepath.Join(cityPath, "pack.toml"))
 	if err != nil {
 		t.Fatalf("reading pack.toml: %v", err)
 	}
 	if !strings.Contains(string(packData), `name = "my-bare-name"`) {
-		t.Errorf("pack.toml should keep init name aligned with workspace.name, got:\n%s", string(packData))
+		t.Errorf("pack.toml should keep init name aligned with site workspace name, got:\n%s", string(packData))
 	}
 }
 

@@ -524,6 +524,17 @@ func newInitPackConfig(cityName string) initPackConfig {
 	}
 }
 
+// splitInitConfig separates a composed init template City into its
+// portable pack-first shape and the machine-local city runtime shape:
+//
+//   - pack.toml owns the portable definition: [pack], [[agent]],
+//     [[named_session]], [imports.*], [providers.*], agent/service
+//     patches, formulas, and agent_defaults.
+//   - city.toml keeps only runtime-local deployment settings (e.g.
+//     workspace.provider, workspace.start_command, api, daemon, beads).
+//   - workspace.name and workspace.prefix migrate to .gc/site.toml via
+//     persistInitWorkspaceIdentity, so they are cleared here to avoid
+//     duplicating the city's machine-local identity in city.toml.
 func splitInitConfig(cityName string, cfg *config.City) (initPackConfig, config.City) {
 	packCfg := newInitPackConfig(cityName)
 	if cfg == nil {
@@ -531,13 +542,61 @@ func splitInitConfig(cityName string, cfg *config.City) (initPackConfig, config.
 	}
 
 	cityCfg := *cfg
+	cityCfg.Agents = nil
+	cityCfg.NamedSessions = nil
+	cityCfg.Imports = nil
+	cityCfg.Providers = nil
+	cityCfg.Services = nil
+	cityCfg.Formulas = config.FormulasConfig{}
+	cityCfg.Patches = config.Patches{}
+	cityCfg.AgentDefaults = config.AgentDefaults{}
+	cityCfg.AgentsDefaults = config.AgentDefaults{}
+	cityCfg.Workspace.Name = ""
+	cityCfg.Workspace.Prefix = ""
+
+	packCfg.Agents = append([]config.Agent(nil), cfg.Agents...)
+	packCfg.NamedSessions = append([]config.NamedSession(nil), cfg.NamedSessions...)
 	if len(cfg.Imports) > 0 {
 		packCfg.Imports = make(map[string]config.Import, len(cfg.Imports))
 		for name, imp := range cfg.Imports {
 			packCfg.Imports[name] = imp
 		}
-		cityCfg.Imports = nil
 	}
+	if len(cfg.Providers) > 0 {
+		packCfg.Providers = make(map[string]config.ProviderSpec, len(cfg.Providers))
+		for name, spec := range cfg.Providers {
+			packCfg.Providers[name] = spec
+		}
+	}
+	packCfg.AgentDefaults = cfg.AgentDefaults
+	if isZeroValue(packCfg.AgentDefaults) && !isZeroValue(cfg.AgentsDefaults) {
+		packCfg.AgentDefaults = cfg.AgentsDefaults
+	}
+	packCfg.Formulas = cfg.Formulas
+	packCfg.Patches = cfg.Patches
+	for _, svc := range cfg.Services {
+		if svc.PublishMode == "direct" {
+			cityCfg.Services = append(cityCfg.Services, svc)
+			continue
+		}
+		packCfg.Services = append(packCfg.Services, svc)
+	}
+
+	if len(cfg.Workspace.Includes) > 0 {
+		packCfg.Pack.Includes = appendUniqueStrings(
+			append([]string(nil), packCfg.Pack.Includes...),
+			cfg.Workspace.Includes...,
+		)
+		cityCfg.Workspace.Includes = nil
+	}
+	if len(cfg.Workspace.GlobalFragments) > 0 {
+		packCfg.AgentDefaults.AppendFragments = appendUniqueStrings(
+			append([]string(nil), packCfg.AgentDefaults.AppendFragments...),
+			cfg.Workspace.GlobalFragments...,
+		)
+		cityCfg.Workspace.GlobalFragments = nil
+	}
+
 	if len(cfg.DefaultRigImports) > 0 {
 		defaults := packDefaults{
 			Rig: packRigDefaults{
@@ -673,6 +732,10 @@ func cmdInitFromTOMLFileWithOptions(fs fsys.FS, tomlSrc, cityPath, nameOverride 
 	if code := writeDefaultFormulas(fs, cityPath, stderr); code != 0 {
 		return code
 	}
+	// Rewrite legacy prompt paths on the composed config before splitting so
+	// the pack-owned [[agent]] entries pick up the V2 agents/<name>/
+	// prompt.template.md paths we actually scaffold.
+	rewriteInitPromptTemplates(cfg)
 	packCfg, cityCfg := splitInitConfig(cityName, cfg)
 	applyInitPackTemplateExtras(&packCfg, templatePack)
 	if err := writeInitPackToml(fs, cityPath, packCfg); err != nil {
@@ -684,10 +747,6 @@ func cmdInitFromTOMLFileWithOptions(fs fsys.FS, tomlSrc, cityPath, nameOverride 
 	if rfErr := ResolveFormulas(cityPath, []string{formulasInitDir}); rfErr != nil {
 		fmt.Fprintf(stderr, "gc init: resolving formulas: %v\n", rfErr) //nolint:errcheck // best-effort stderr
 	}
-
-	// Rewrite legacy prompt paths only after we've copied the embedded prompt
-	// scaffolds that still live under prompts/.
-	rewriteInitPromptTemplates(&cityCfg)
 
 	// Re-marshal so the name and rewritten prompt paths are updated.
 	content, err := cityCfg.Marshal()
@@ -812,8 +871,11 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 	// Write city.toml — wizard path gets one agent + provider/startCommand;
 	// --provider path gets the same city shape non-interactively;
 	// custom path gets one mayor + no provider (user configures manually).
+	// Rewrite legacy prompt paths on the composed config before splitting so
+	// the pack-owned [[agent]] entries pick up the V2 agents/<name>/
+	// prompt.template.md paths we actually scaffold.
+	rewriteInitPromptTemplates(&cfg)
 	packCfg, cityCfg := splitInitConfig(cityName, &cfg)
-	rewriteInitPromptTemplates(&cityCfg)
 	content, err := cityCfg.Marshal()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
