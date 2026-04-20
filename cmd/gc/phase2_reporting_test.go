@@ -84,6 +84,9 @@ func startupRuntimeConfigMaterializationResult(tc phase2ProviderCase, tp Templat
 	case cfg.Env["GC_SESSION_NAME"] != tp.SessionName:
 		return workertest.Fail(tc.profileID, workertest.RequirementStartupRuntimeConfigMaterialization,
 			fmt.Sprintf("GC_SESSION_NAME = %q, want %q", cfg.Env["GC_SESSION_NAME"], tp.SessionName)).WithEvidence(evidence)
+	case tp.Prompt != "" && cfg.Env[startupPromptDeliveredEnv] != "1":
+		return workertest.Fail(tc.profileID, workertest.RequirementStartupRuntimeConfigMaterialization,
+			fmt.Sprintf("%s = %q, want 1", startupPromptDeliveredEnv, cfg.Env[startupPromptDeliveredEnv])).WithEvidence(evidence)
 	case cfg.Env["WORKER_CORE_MARKER"] != tc.family:
 		return workertest.Fail(tc.profileID, workertest.RequirementStartupRuntimeConfigMaterialization,
 			fmt.Sprintf("WORKER_CORE_MARKER = %q, want %q", cfg.Env["WORKER_CORE_MARKER"], tc.family)).WithEvidence(evidence)
@@ -149,17 +152,19 @@ func initialMessageResumeResult(tc phase2ProviderCase, prepared *preparedStart) 
 		return workertest.Fail(tc.profileID, workertest.RequirementInputInitialMessageResume,
 			fmt.Sprintf("PromptSuffix encoding invalid: %v", err)).WithEvidence(evidence)
 	}
-	want := "Base worker prompt"
 	switch {
-	case got != want:
+	case got != "":
 		return workertest.Fail(tc.profileID, workertest.RequirementInputInitialMessageResume,
-			fmt.Sprintf("PromptSuffix payload = %q, want %q", got, want)).WithEvidence(evidence)
+			fmt.Sprintf("PromptSuffix payload = %q, want no startup user-turn on resume", got)).WithEvidence(evidence)
 	case strings.Contains(got, "Do the first task."):
 		return workertest.Fail(tc.profileID, workertest.RequirementInputInitialMessageResume,
 			fmt.Sprintf("PromptSuffix payload = %q, want no replayed initial message", got)).WithEvidence(evidence)
+	case prepared.cfg.Env[startupPromptDeliveredEnv] != "":
+		return workertest.Fail(tc.profileID, workertest.RequirementInputInitialMessageResume,
+			fmt.Sprintf("%s = %q, want unset on resume", startupPromptDeliveredEnv, prepared.cfg.Env[startupPromptDeliveredEnv])).WithEvidence(evidence)
 	default:
 		return workertest.Pass(tc.profileID, workertest.RequirementInputInitialMessageResume,
-			"resumed sessions do not replay the initial_message after first start").WithEvidence(evidence)
+			"resumed sessions do not replay startup prompt material as a new user turn").WithEvidence(evidence)
 	}
 }
 

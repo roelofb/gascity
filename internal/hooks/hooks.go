@@ -358,5 +358,6 @@ func claudeFileNeedsUpgrade(existing []byte) bool {
 		return false
 	}
 	stale := strings.Replace(string(current), `gc handoff \"context cycle\"`, `gc prime --hook`, 1)
-	return string(existing) == stale
+	previousSessionStart := strings.Replace(string(current), `GC_MANAGED_SESSION_HOOK=1 GC_HOOK_EVENT_NAME=SessionStart gc prime --hook`, `gc prime --hook`, 1)
+	return string(existing) == stale || string(existing) == previousSessionStart
 }

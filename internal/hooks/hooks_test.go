@@ -95,8 +95,15 @@ func TestInstallClaude(t *testing.T) {
 	if !strings.Contains(s, "SessionStart") {
 		t.Error("claude settings should contain SessionStart hook")
 	}
-	if !strings.Contains(claudeHookCommand(t, runtimeData, "SessionStart"), "gc prime --hook") {
+	sessionStartCommand := claudeHookCommand(t, runtimeData, "SessionStart")
+	if !strings.Contains(sessionStartCommand, "gc prime --hook") {
 		t.Error("claude SessionStart hook should contain gc prime --hook")
+	}
+	if !strings.Contains(sessionStartCommand, "GC_HOOK_EVENT_NAME=SessionStart") {
+		t.Error("claude SessionStart hook should mark managed hook event")
+	}
+	if !strings.Contains(sessionStartCommand, "GC_MANAGED_SESSION_HOOK=1") {
+		t.Error("claude SessionStart hook should mark managed hook invocation")
 	}
 	if !strings.Contains(claudeHookCommand(t, runtimeData, "PreCompact"), `gc handoff "context cycle"`) {
 		t.Error("claude PreCompact hook should use gc handoff (not gc prime) to avoid context accumulation on compaction")
@@ -139,6 +146,37 @@ func TestInstallClaudeUpgradesStaleGeneratedFile(t *testing.T) {
 	runtimeData := fs.Files["/city/.gc/settings.json"]
 	if !strings.Contains(claudeHookCommand(t, hookData, "PreCompact"), `gc handoff "context cycle"`) {
 		t.Fatalf("upgraded claude hook missing gc handoff:\n%s", string(hookData))
+	}
+	if string(runtimeData) != string(hookData) {
+		t.Fatalf("runtime Claude settings should mirror upgraded hook settings:\n%s", string(runtimeData))
+	}
+}
+
+func TestInstallClaudeUpgradesGeneratedFileMissingManagedSessionMarkers(t *testing.T) {
+	fs := fsys.NewFake()
+	current, err := readEmbedded("config/claude.json")
+	if err != nil {
+		t.Fatalf("readEmbedded: %v", err)
+	}
+	stale := strings.Replace(string(current), `GC_MANAGED_SESSION_HOOK=1 GC_HOOK_EVENT_NAME=SessionStart gc prime --hook`, `gc prime --hook`, 1)
+	if stale == string(current) {
+		t.Fatal("stale fixture did not diverge from current embedded config — check SessionStart marker pattern")
+	}
+	fs.Files["/city/hooks/claude.json"] = []byte(stale)
+	fs.Files["/city/.gc/settings.json"] = []byte(stale)
+
+	if err := Install(fs, "/city", "/work", []string{"claude"}); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	hookData := fs.Files["/city/hooks/claude.json"]
+	runtimeData := fs.Files["/city/.gc/settings.json"]
+	sessionStartCommand := claudeHookCommand(t, hookData, "SessionStart")
+	if !strings.Contains(sessionStartCommand, "GC_HOOK_EVENT_NAME=SessionStart") {
+		t.Fatalf("upgraded SessionStart missing event marker: %s", sessionStartCommand)
+	}
+	if !strings.Contains(sessionStartCommand, "GC_MANAGED_SESSION_HOOK=1") {
+		t.Fatalf("upgraded SessionStart missing managed marker: %s", sessionStartCommand)
 	}
 	if string(runtimeData) != string(hookData) {
 		t.Fatalf("runtime Claude settings should mirror upgraded hook settings:\n%s", string(runtimeData))
