@@ -12,11 +12,9 @@ import (
 
 	"github.com/gastownhall/gascity/internal/api"
 	"github.com/gastownhall/gascity/internal/beads/contract"
-	"github.com/gastownhall/gascity/internal/citylayout"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/hooks"
-	"github.com/gastownhall/gascity/internal/supervisor"
 	"github.com/spf13/cobra"
 )
 
@@ -39,7 +37,7 @@ are scoped to rigs via their "dir" field.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				fmt.Fprintln(stderr, "gc rig: missing subcommand (add, default, list, remove, restart, resume, set-endpoint, status, suspend)") //nolint:errcheck // best-effort stderr
+				fmt.Fprintln(stderr, "gc rig: missing subcommand (add, list, remove, restart, resume, set-endpoint, status, suspend)") //nolint:errcheck // best-effort stderr
 			} else {
 				fmt.Fprintf(stderr, "gc rig: unknown subcommand %q\n", args[0]) //nolint:errcheck // best-effort stderr
 			}
@@ -48,7 +46,6 @@ are scoped to rigs via their "dir" field.`,
 	}
 	cmd.AddCommand(
 		newRigAddCmd(stdout, stderr),
-		newRigDefaultCmd(stdout, stderr),
 		newRigListCmd(stdout, stderr),
 		newRigRemoveCmd(stdout, stderr),
 		newRigRestartCmd(stdout, stderr),
@@ -461,13 +458,6 @@ func doRigAdd(fs fsys.FS, cityPath, rigPath string, includes []string, nameOverr
 				fmt.Fprintf(stderr, "gc rig add: resolving formulas: %v\n", rfErr) //nolint:errcheck // best-effort stderr
 			}
 		}
-	}
-
-	reg := supervisor.NewRegistry(supervisor.RegistryPath())
-	if err := reg.RegisterRig(rigPath, name, cityPath); err != nil {
-		fmt.Fprintf(stderr, "gc rig add: warning: updating global registry: %v\n", err) //nolint:errcheck // best-effort stderr
-	} else {
-		w("  Registered in global rig index")
 	}
 
 	if err := writeBeadsEnvGTRoot(fs, rigPath, cityPath); err != nil {
@@ -892,10 +882,8 @@ func newRigRemoveCmd(stdout, stderr io.Writer) *cobra.Command {
 		Short: "Remove a rig from the city",
 		Long: `Remove a rig from the current city's configuration.
 
-Removes the rig entry from city.toml and updates the global rig index
-in cities.toml. If the rig no longer belongs to any city, it is removed
-from the global index entirely. If this city was the rig's default,
-the default is cleared.`,
+Removes the rig entry from city.toml and removes its machine-local path
+binding from .gc/site.toml.`,
 		Example: `  gc rig remove myrig`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -907,7 +895,7 @@ the default is cleared.`,
 	}
 }
 
-// cmdRigRemove removes a rig from the current city and updates the global registry.
+// cmdRigRemove removes a rig from the current city and its local site binding.
 func cmdRigRemove(rigName string, stdout, stderr io.Writer) int {
 	cityPath, err := resolveCity()
 	if err != nil {
@@ -923,16 +911,10 @@ func cmdRigRemove(rigName string, stdout, stderr io.Writer) int {
 	}
 
 	// Find and remove the rig from config.
-	var removedPath string
 	found := false
 	filtered := cfg.Rigs[:0]
 	for _, r := range cfg.Rigs {
 		if r.Name == rigName {
-			removedPath = r.Path
-			if !filepath.IsAbs(removedPath) {
-				removedPath = filepath.Join(cityPath, removedPath)
-			}
-			removedPath = filepath.Clean(removedPath)
 			found = true
 			continue
 		}
@@ -950,33 +932,6 @@ func cmdRigRemove(rigName string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Update global registry: check if rig is still in any other city.
-	reg := supervisor.NewRegistry(supervisor.RegistryPath())
-	remainingPaths := rigCityPaths(reg, removedPath)
-	if len(remainingPaths) == 0 {
-		// No other city has this rig — remove from global index.
-		_ = reg.UnregisterRig(removedPath)
-	} else {
-		// Still in other cities — update default if it pointed to this city.
-		if entry, ok := reg.LookupRigByName(rigName); ok && samePath(entry.DefaultCity, cityPath) {
-			var newDefault string
-			if len(remainingPaths) == 1 {
-				newDefault = remainingPaths[0]
-			}
-			_ = reg.SetRigDefault(removedPath, newDefault)
-
-			// Update .beads/.env and routes for the rig's new default city.
-			if newDefault != "" {
-				_ = writeBeadsEnvGTRoot(fsys.OSFS{}, removedPath, newDefault)
-				if newCfg, err := loadCityConfigSuppressDeprecatedOrderWarnings(newDefault, io.Discard); err == nil {
-					resolveRigPaths(newDefault, newCfg.Rigs)
-					newRigs := collectRigRoutes(newDefault, newCfg)
-					_ = writeAllRoutes(newRigs)
-				}
-			}
-		}
-	}
-
 	// Regenerate routes.
 	resolveRigPaths(cityPath, cfg.Rigs)
 	allRigs := collectRigRoutes(cityPath, cfg)
@@ -987,131 +942,6 @@ func cmdRigRemove(rigName string, stdout, stderr io.Writer) int {
 	_ = reloadControllerConfig(cityPath)
 	fmt.Fprintf(stdout, "Removed rig '%s'\n", rigName) //nolint:errcheck // best-effort stdout
 	return 0
-}
-
-func newRigDefaultCmd(stdout, stderr io.Writer) *cobra.Command {
-	var cityName string
-	cmd := &cobra.Command{
-		Use:   "default <rig-name>",
-		Short: "Set the default city for a rig",
-		Long: `Set which city a rig resolves to when accessed from outside any city tree.
-
-When a rig belongs to multiple cities, gc commands run from the rig
-directory need to know which city to use. This command sets that default.
-It also updates the rig's .beads/.env with GT_ROOT and rewrites
-routes.jsonl from the new default city's rig set.`,
-		Example: `  gc rig default myrig --city alpha
-  gc rig default /path/to/myrig --city beta`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if cityName == "" {
-				fmt.Fprintln(stderr, "gc rig default: --city is required") //nolint:errcheck // best-effort stderr
-				return errExit
-			}
-			if cmdRigDefault(args[0], cityName, stdout, stderr) != 0 {
-				return errExit
-			}
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&cityName, "city", "", "city name or path to set as default (required)")
-	return cmd
-}
-
-// cmdRigDefault sets the default city for a rig.
-func cmdRigDefault(rigNameOrPath, cityNameOrPath string, stdout, stderr io.Writer) int {
-	reg := supervisor.NewRegistry(supervisor.RegistryPath())
-
-	// Resolve rig.
-	entry, ok := reg.LookupRigByName(rigNameOrPath)
-	if !ok {
-		abs, err := filepath.Abs(rigNameOrPath)
-		if err != nil {
-			fmt.Fprintf(stderr, "gc rig default: %v\n", err) //nolint:errcheck // best-effort stderr
-			return 1
-		}
-		entry, ok = reg.LookupRigByPath(abs)
-		if !ok {
-			fmt.Fprintf(stderr, "gc rig default: rig %q is not registered\n", rigNameOrPath) //nolint:errcheck // best-effort stderr
-			return 1
-		}
-	}
-
-	// Resolve city.
-	cityPath, err := resolveCityByNameOrPath(reg, cityNameOrPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "gc rig default: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
-	}
-
-	// Validate rig belongs to this city.
-	cfg, err := loadCityConfig(cityPath, stderr)
-	if err != nil {
-		fmt.Fprintf(stderr, "gc rig default: loading city config: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
-	}
-	found := false
-	for _, r := range cfg.Rigs {
-		rp := r.Path
-		if !filepath.IsAbs(rp) {
-			rp = filepath.Join(cityPath, rp)
-		}
-		if samePath(rp, entry.Path) {
-			found = true
-			break
-		}
-	}
-	if !found {
-		fmt.Fprintf(stderr, "gc rig default: rig %q is not registered in city %q\n", entry.Name, cityNameOrPath) //nolint:errcheck // best-effort stderr
-		return 1
-	}
-
-	// Update default in cities.toml.
-	if err := reg.SetRigDefault(entry.Path, cityPath); err != nil {
-		fmt.Fprintf(stderr, "gc rig default: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
-	}
-
-	// Update .beads/.env.
-	if err := writeBeadsEnvGTRoot(fsys.OSFS{}, entry.Path, cityPath); err != nil {
-		fmt.Fprintf(stderr, "gc rig default: warning: writing .beads/.env: %v\n", err) //nolint:errcheck // best-effort stderr
-	}
-
-	// Rewrite routes.jsonl from the new default city's rig set.
-	resolveRigPaths(cityPath, cfg.Rigs)
-	allRigs := collectRigRoutes(cityPath, cfg)
-	if err := writeAllRoutes(allRigs); err != nil {
-		fmt.Fprintf(stderr, "gc rig default: warning: writing routes: %v\n", err) //nolint:errcheck // best-effort stderr
-	}
-
-	cityName := loadedCityName(cfg, cityPath)
-	fmt.Fprintf(stdout, "Set default city for rig '%s' to '%s'\n", entry.Name, cityName) //nolint:errcheck // best-effort stdout
-	return 0
-}
-
-// resolveCityByNameOrPath resolves a city argument that can be either a name
-// (looked up in the registry) or a filesystem path.
-func resolveCityByNameOrPath(reg *supervisor.Registry, nameOrPath string) (string, error) {
-	// Try as a path first.
-	abs, err := filepath.Abs(nameOrPath)
-	if err == nil {
-		if citylayout.HasCityConfig(abs) || citylayout.HasRuntimeRoot(abs) {
-			return normalizePathForCompare(abs), nil
-		}
-	}
-
-	// Try as a name in the registry.
-	cities, err := reg.List()
-	if err != nil {
-		return "", fmt.Errorf("listing cities: %w", err)
-	}
-	for _, c := range cities {
-		if c.EffectiveName() == nameOrPath {
-			return c.Path, nil
-		}
-	}
-
-	return "", fmt.Errorf("city %q not found (not a path or registered name)", nameOrPath)
 }
 
 // writeBeadsEnvGTRoot writes or updates GT_ROOT in <rigPath>/.beads/.env.

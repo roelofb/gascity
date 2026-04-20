@@ -196,7 +196,6 @@ Adding rig 'my-project'...
   Prefix: mp
   Initialized beads database
   Generated routes.jsonl for cross-rig routing
-  Registered in global rig index
 Rig added.
 ```
 

@@ -13,7 +13,6 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/doctor"
 	"github.com/gastownhall/gascity/internal/fsys"
-	"github.com/gastownhall/gascity/internal/supervisor"
 	"github.com/spf13/cobra"
 )
 
@@ -214,13 +213,6 @@ func doDoctor(fix, verbose bool, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// Global rig index check + backfill.
-	if cfgErr == nil {
-		d.Register(&doctor.RigIndexCheck{
-			FixFn: backfillRigIndex,
-		})
-	}
-
 	// Worktree integrity check.
 	d.Register(&doctor.WorktreeCheck{})
 
@@ -266,35 +258,6 @@ func collectPackDirs(cfg *config.City) []string {
 		}
 	}
 	return result
-}
-
-// backfillRigIndex registers all rigs from the given city in the global
-// rig index and writes GT_ROOT to each rig's .beads/.env.
-func backfillRigIndex(cityPath string) error {
-	cfg, err := loadCityConfig(cityPath, io.Discard)
-	if err != nil {
-		return err
-	}
-
-	resolveRigPaths(cityPath, cfg.Rigs)
-	reg := supervisor.NewRegistry(supervisor.RegistryPath())
-	for _, rig := range cfg.Rigs {
-		rigPath := rig.Path
-		// Unbound rigs (no .gc/site.toml binding) have an empty path;
-		// registering that would pollute the supervisor registry with
-		// an entry pointing at the city root.
-		if strings.TrimSpace(rigPath) == "" {
-			continue
-		}
-
-		if err := reg.RegisterRig(rigPath, rig.Name, cityPath); err != nil {
-			// Non-fatal — may be a name conflict with another city's rig.
-			continue
-		}
-		// Write GT_ROOT to .beads/.env.
-		_ = writeBeadsEnvGTRoot(fsys.OSFS{}, rigPath, cityPath)
-	}
-	return nil
 }
 
 // openStoreForCity creates a beads.Store factory rooted in the given city.

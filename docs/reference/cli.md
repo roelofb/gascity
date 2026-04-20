@@ -1611,7 +1611,6 @@ gc rig
 | Subcommand | Description |
 |------------|-------------|
 | [gc rig add](#gc-rig-add) | Register a project as a rig |
-| [gc rig default](#gc-rig-default) | Set the default city for a rig |
 | [gc rig list](#gc-rig-list) | List registered rigs |
 | [gc rig remove](#gc-rig-remove) | Remove a rig from the city |
 | [gc rig restart](#gc-rig-restart) | Restart all agents in a rig |
@@ -1663,30 +1662,6 @@ gc rig add /path/to/project
 | `--prefix` | string |  | bead ID prefix (default: derived from name) |
 | `--start-suspended` | bool |  | add rig in suspended state (dormant-by-default) |
 
-## gc rig default
-
-Set which city a rig resolves to when accessed from outside any city tree.
-
-When a rig belongs to multiple cities, gc commands run from the rig
-directory need to know which city to use. This command sets that default.
-It also updates the rig's .beads/.env with GT_ROOT and rewrites
-routes.jsonl from the new default city's rig set.
-
-```
-gc rig default <rig-name> [flags]
-```
-
-**Example:**
-
-```
-gc rig default myrig --city alpha
-  gc rig default /path/to/myrig --city beta
-```
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--city` | string |  | city name or path to set as default (required) |
-
 ## gc rig list
 
 List all registered rigs with their paths, prefixes, and beads status.
@@ -1706,10 +1681,8 @@ gc rig list [flags]
 
 Remove a rig from the current city's configuration.
 
-Removes the rig entry from city.toml and updates the global rig index
-in cities.toml. If the rig no longer belongs to any city, it is removed
-from the global index entirely. If this city was the rig's default,
-the default is cleared.
+Removes the rig entry from city.toml and removes its machine-local path
+binding from .gc/site.toml.
 
 ```
 gc rig remove <name>
