@@ -51,10 +51,7 @@ func renderPrompt(fs fsys.FS, cityPath, cityName, templatePath string, ctx Promp
 	if templatePath == "" {
 		return ""
 	}
-	sourcePath := templatePath
-	if !filepath.IsAbs(sourcePath) {
-		sourcePath = filepath.Join(cityPath, templatePath)
-	}
+	sourcePath := promptTemplateSourcePath(cityPath, templatePath)
 	data, err := fs.ReadFile(sourcePath)
 	if err != nil {
 		return ""
@@ -125,6 +122,13 @@ func renderPrompt(fs fsys.FS, cityPath, cityName, templatePath string, ctx Promp
 	}
 
 	return buf.String()
+}
+
+func promptTemplateSourcePath(cityPath, templatePath string) string {
+	if filepath.IsAbs(templatePath) {
+		return templatePath
+	}
+	return filepath.Join(cityPath, templatePath)
 }
 
 func isCanonicalPromptTemplatePath(path string) bool {

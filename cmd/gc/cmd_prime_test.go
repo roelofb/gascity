@@ -250,7 +250,7 @@ prompt_template = "prompts/polecat.template.md"
 	t.Setenv("GC_SESSION_ID", "sess-777")
 
 	var stdout, stderr bytes.Buffer
-	code := doPrimeWithMode(nil, &stdout, &stderr, true)
+	code := doPrimeWithMode(nil, &stdout, &stderr, true, false)
 	if code != 0 {
 		t.Fatalf("doPrimeWithMode() = %d, want 0; stderr=%q", code, stderr.String())
 	}
