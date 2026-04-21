@@ -389,13 +389,18 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 				// templateNameFor returns cfgAgent.PoolName for pool
 				// instances and qualifiedName for singletons.
 				materializeAgent := templateNameFor(cfgAgent, qualifiedName)
-				var snapshotFile string
 				if sharedCatalog != nil {
 					if snapshot, err := encodeSharedCatalogSnapshot(*sharedCatalog); err == nil {
-						snapshotFile = writeSkillSnapshotFile(workDir, qualifiedName, snapshot)
+						if writeSkillSnapshotFile(workDir, materializeAgent, snapshot) == "" {
+							removeSkillSnapshotFile(workDir, materializeAgent)
+						}
+					} else {
+						removeSkillSnapshotFile(workDir, materializeAgent)
 					}
+				} else {
+					removeSkillSnapshotFile(workDir, materializeAgent)
 				}
-				expandedPreStart = appendMaterializeSkillsPreStart(expandedPreStart, materializeAgent, workDir, snapshotFile)
+				expandedPreStart = appendMaterializeSkillsPreStart(expandedPreStart, materializeAgent, workDir)
 			}
 		}
 	}

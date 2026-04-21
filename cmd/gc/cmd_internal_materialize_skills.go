@@ -69,17 +69,27 @@ func newInternalMaterializeSkillsCmd(stdout, stderr io.Writer) *cobra.Command {
 				fmt.Fprintf(stderr, "gc internal materialize-skills: unknown agent %q\n", agentName) //nolint:errcheck // best-effort stderr
 				return errExit
 			}
-			// Resolve snapshot source: --shared-catalog-snapshot-file
-			// (preferred — keeps the base64 blob out of argv/env, used
-			// for stage-2 PreStart) → --shared-catalog-snapshot
-			// (legacy/test path — base64 inline) → env var (legacy
-			// upgrade-compat path for sessions whose stored CoreFingerprint
-			// hashed the old pre-start command shape).
-			if strings.TrimSpace(sharedCatalogSnapshot) == "" && strings.TrimSpace(sharedCatalogSnapshotFile) != "" {
-				data, err := os.ReadFile(sharedCatalogSnapshotFile)
+			// Resolve snapshot source: explicit --shared-catalog-snapshot-file
+			// → deterministic workdir-local snapshot file (keeps the
+			// pre-start command shape stable across upgrades) →
+			// --shared-catalog-snapshot (legacy/test path — base64 inline)
+			// → env var (legacy upgrade-compat path for sessions that were
+			// already launched before the file-indirection rollout).
+			explicitSnapshotFile := strings.TrimSpace(sharedCatalogSnapshotFile)
+			defaultSnapshotFile := ""
+			if explicitSnapshotFile == "" {
+				defaultSnapshotFile = skillSnapshotFilePath(workdir, agentName)
+			}
+			if explicitSnapshotFile != "" {
+				data, err := os.ReadFile(explicitSnapshotFile)
 				if err != nil {
-					fmt.Fprintf(stderr, "gc internal materialize-skills: reading --shared-catalog-snapshot-file %q: %v (falling back to live catalog)\n", sharedCatalogSnapshotFile, err) //nolint:errcheck // best-effort stderr
+					fmt.Fprintf(stderr, "gc internal materialize-skills: reading --shared-catalog-snapshot-file %q: %v (falling back to live catalog)\n", explicitSnapshotFile, err) //nolint:errcheck // best-effort stderr
 				} else {
+					sharedCatalogSnapshot = string(data)
+				}
+			}
+			if strings.TrimSpace(sharedCatalogSnapshot) == "" && defaultSnapshotFile != "" {
+				if data, err := os.ReadFile(defaultSnapshotFile); err == nil {
 					sharedCatalogSnapshot = string(data)
 				}
 			}

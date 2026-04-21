@@ -376,24 +376,42 @@ func writeSkillBullets(b *strings.Builder, entries []materialize.SkillEntry, ori
 // invokes `gc internal materialize-skills --agent <name> --workdir
 // <path>` for per-session-worktree materialization.
 //
-// When snapshotFile is non-empty the shared-catalog snapshot is passed
-// via --shared-catalog-snapshot-file <path> (file indirection) so the
-// base64 blob stays out of the tmux env and tmux argv, avoiding the
-// ~16 KiB imsg protocol limit that causes "command too long" errors when
-// new-session is called with -e GC_SHARED_SKILL_CATALOG_SNAPSHOT=<blob>.
-// The catalog is read from the file at materialize-skills execution
-// time, not via shell expansion, so the blob never appears in argv either.
+// The shared-catalog snapshot itself is staged to a deterministic file
+// under the workdir (see writeSkillSnapshotFile) and materialize-skills
+// re-discovers that path at runtime. Keeping the command shape stable
+// avoids flipping the runtime fingerprint for already-running sessions
+// during upgrade while still moving the large catalog blob off tmux's
+// env/argv paths.
 //
 // The gc binary path comes from $GC_BIN (populated by the runtime env
 // setup) with "gc" as a fallback if the env var isn't available at
 // PreStart expansion time. Argument values are shell-quoted.
-func appendMaterializeSkillsPreStart(prestart []string, qualifiedName, workDir, snapshotFile string) []string {
+func appendMaterializeSkillsPreStart(prestart []string, qualifiedName, workDir string) []string {
 	cmd := `"${GC_BIN:-gc}" internal materialize-skills --agent ` +
 		shellquote.Join([]string{qualifiedName}) + ` --workdir ` + shellquote.Join([]string{workDir})
-	if snapshotFile != "" {
-		cmd += ` --shared-catalog-snapshot-file ` + shellquote.Join([]string{snapshotFile})
-	}
 	return append(prestart, cmd)
+}
+
+// skillSnapshotFilePath returns the deterministic path used to persist
+// the shared skill catalog snapshot for one agent/workdir pair.
+func skillSnapshotFilePath(workDir, qualifiedName string) string {
+	if workDir == "" || qualifiedName == "" {
+		return ""
+	}
+	safeName := strings.ReplaceAll(qualifiedName, string(filepath.Separator), "_")
+	safeName = strings.ReplaceAll(safeName, "/", "_")
+	return filepath.Join(workDir, ".gc", "tmp", "skill-catalog-"+safeName+".b64")
+}
+
+// removeSkillSnapshotFile clears the deterministic staged snapshot path
+// so stage-2 materialize-skills falls back to live catalog loading
+// instead of consuming stale shared-catalog data.
+func removeSkillSnapshotFile(workDir, qualifiedName string) {
+	path := skillSnapshotFilePath(workDir, qualifiedName)
+	if path == "" {
+		return
+	}
+	_ = os.Remove(path)
 }
 
 // writeSkillSnapshotFile persists a base64-encoded shared skill catalog
@@ -408,17 +426,41 @@ func appendMaterializeSkillsPreStart(prestart []string, qualifiedName, workDir, 
 // reconciler tick. The blob itself is overwritten each call because the
 // catalog can drift between ticks.
 func writeSkillSnapshotFile(workDir, qualifiedName, snapshot string) string {
-	if workDir == "" || snapshot == "" {
+	path := skillSnapshotFilePath(workDir, qualifiedName)
+	if path == "" || snapshot == "" {
 		return ""
 	}
-	dir := filepath.Join(workDir, ".gc", "tmp")
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		removeSkillSnapshotFile(workDir, qualifiedName)
 		return ""
 	}
-	safeName := strings.ReplaceAll(qualifiedName, string(filepath.Separator), "_")
-	safeName = strings.ReplaceAll(safeName, "/", "_")
-	path := filepath.Join(dir, "skill-catalog-"+safeName+".b64")
-	if err := os.WriteFile(path, []byte(snapshot), 0o600); err != nil {
+	tmp, err := os.CreateTemp(dir, "skill-catalog-*.tmp")
+	if err != nil {
+		removeSkillSnapshotFile(workDir, qualifiedName)
+		return ""
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write([]byte(snapshot)); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		removeSkillSnapshotFile(workDir, qualifiedName)
+		return ""
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		removeSkillSnapshotFile(workDir, qualifiedName)
+		return ""
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		removeSkillSnapshotFile(workDir, qualifiedName)
+		return ""
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		removeSkillSnapshotFile(workDir, qualifiedName)
 		return ""
 	}
 	return path

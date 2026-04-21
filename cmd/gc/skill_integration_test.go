@@ -518,7 +518,7 @@ func TestBuildAssignedSkillsPromptFragmentOmitsDescriptionWhenMissing(t *testing
 func TestAppendMaterializeSkillsPreStart(t *testing.T) {
 	t.Parallel()
 	existing := []string{"mkdir -p .cache", "./setup.sh"}
-	got := appendMaterializeSkillsPreStart(existing, "hello-world/polecat", "/worktrees/polecat-1", "")
+	got := appendMaterializeSkillsPreStart(existing, "hello-world/polecat", "/worktrees/polecat-1")
 	if len(got) != 3 {
 		t.Fatalf("want 3 entries, got %d (%v)", len(got), got)
 	}
@@ -546,6 +546,15 @@ func TestAppendMaterializeSkillsPreStart(t *testing.T) {
 	// env provides the authoritative binary path.
 	if !strings.Contains(last, "${GC_BIN:-gc}") {
 		t.Errorf("GC_BIN reference missing: %q", last)
+	}
+}
+
+func TestSkillSnapshotFilePath(t *testing.T) {
+	t.Parallel()
+	got := skillSnapshotFilePath("/tmp/worktree", "repo/polecat")
+	want := filepath.Join("/tmp/worktree", ".gc", "tmp", "skill-catalog-repo_polecat.b64")
+	if got != want {
+		t.Fatalf("skillSnapshotFilePath() = %q, want %q", got, want)
 	}
 }
 
