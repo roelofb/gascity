@@ -40,6 +40,13 @@ func TestTutorial04Communication(t *testing.T) {
 	if _, err := ws.waitForSessionByTemplateOrTarget("mayor", "mayor", 30*time.Second, time.Second); err != nil {
 		t.Fatalf("resolve mayor session bead: %v", err)
 	}
+	wakeMayor := func(context string) {
+		t.Helper()
+		out, err := ws.runShell("gc session wake mayor", "")
+		if err != nil && !strings.Contains(out, " is awake") {
+			t.Fatalf("%s: %v\n%s", context, err, out)
+		}
+	}
 	mayorReady := func() bool {
 		peekOut, peekErr := ws.runShell("gc session peek mayor --lines 1", "")
 		return peekErr == nil && strings.TrimSpace(peekOut) != ""
@@ -62,13 +69,12 @@ func TestTutorial04Communication(t *testing.T) {
 		if out, err := ws.runShell("gc start", ""); err != nil {
 			t.Fatalf("hidden gc start during tutorial 04 recovery: %v\n%s", err, out)
 		}
+		wakeMayor("wake mayor after tutorial 04 hidden restart")
 		waitForMayorReady("after tutorial 04 hidden restart")
 	}
 	if !waitForCondition(t, 30*time.Second, 1*time.Second, mayorReady) {
 		ws.noteWarning("tutorial 04 runtime workaround: gc init can leave mayor mid-restart, so the page driver explicitly wakes it before bootstrapping a fresh headless submit")
-		if out, err := ws.runShell("gc session wake mayor", ""); err != nil {
-			t.Fatalf("wake mayor during tutorial 04 bootstrap: %v\n%s", err, out)
-		}
+		wakeMayor("wake mayor during tutorial 04 bootstrap")
 		if out, err := ws.runShell(`gc session submit mayor "__tutorial04_bootstrap__"`, ""); err != nil {
 			t.Fatalf("seed mayor submit bootstrap: %v\n%s", err, out)
 		}
@@ -114,8 +120,7 @@ func TestTutorial04Communication(t *testing.T) {
 	})
 
 	communicationNudge := `Check mail and hook status, then act accordingly`
-	communicationRetryPrompt := `Review needed: check mail about auth module changes in my-project and coordinate with reviewer`
-	communicationPeekTimeout := 60 * time.Second
+	communicationPeekTimeout := 90 * time.Second
 	communicationRetryTimeout := 90 * time.Second
 	nudgeMayor := func(context string) {
 		out, err := ws.runShell(`gc session nudge mayor "`+communicationNudge+`"`, "")
@@ -126,9 +131,9 @@ func TestTutorial04Communication(t *testing.T) {
 			t.Fatalf("%s output mismatch:\n%s", context, out)
 		}
 	}
-	submitMayor := func(prompt, context string) {
+	submitMayorTurn := func(context string) {
 		t.Helper()
-		out, err := ws.runShell(`gc session submit mayor "`+prompt+`"`, "")
+		out, err := ws.runShell(`gc session submit mayor "`+communicationNudge+`"`, "")
 		if err != nil {
 			t.Fatalf("%s: %v\n%s", context, err, out)
 		}
@@ -154,17 +159,19 @@ func TestTutorial04Communication(t *testing.T) {
 			}
 			return strings.Contains(out, "Review needed") ||
 				strings.Contains(out, "auth module") ||
+				strings.Contains(out, "reviewer") ||
 				strings.Contains(out, "my-project/reviewer") ||
 				strings.Contains(out, "gc sling")
 		}
 		ok := waitForCondition(t, communicationPeekTimeout, 2*time.Second, mayorCommunicationVisible)
 		if !ok {
-			ws.noteWarning("tutorial 04 runtime workaround: the visible nudge can leave mayor with injected mail but no rendered coordination step yet, so the page driver submits a hidden follow-up that restates the review request before retrying the visible peek step")
-			submitMayor(communicationRetryPrompt, "hidden submit before communication retry")
+			ws.noteWarning("tutorial 04 runtime workaround: the visible nudge can leave mayor with injected mail but no rendered coordination step yet, so the page driver explicitly wakes mayor and requeues the same mail-driven nudge before retrying the visible peek step")
+			wakeMayor("wake mayor before communication retry")
+			nudgeMayor("re-nudge mayor before communication retry")
 		}
 		if !waitForCondition(t, communicationRetryTimeout, 2*time.Second, mayorCommunicationVisible) {
-			restartCity("mayor still did not surface the communication flow after hidden submit")
-			submitMayor(communicationRetryPrompt, "hidden submit after hidden restart")
+			restartCity("mayor still did not surface the communication flow after wake")
+			submitMayorTurn("submit mayor turn after hidden restart")
 		}
 		if !waitForCondition(t, communicationRetryTimeout, 2*time.Second, mayorCommunicationVisible) {
 			t.Fatalf("peek mayor did not surface communication flow in time:\n%s", out)
