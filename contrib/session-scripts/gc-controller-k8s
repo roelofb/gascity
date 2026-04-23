@@ -159,22 +159,21 @@ init_controller_beads() {
   local city_path="$1"
   local resolved_config
 
-  # The controller pod created by this script runs with
-  # `GC_BEADS=exec:gc-beads-k8s` (see manifest above). The exec provider
-  # handles its own ensure-ready bootstrap against Dolt; `gc bd init` is
-  # only valid against the native bd-backed provider and will fail with
-  # `gc bd: only supported for bd-backed beads providers`.
+  # Choose the per-scope init command based on the controller's beads
+  # provider. `GC_BEADS_PROVIDER` mirrors what the controller pod will
+  # see (defaults to the manifest's hardcoded exec provider).
   #
-  # Skip the legacy bd bootstrap when the controller env selects a
-  # non-bd provider. `GC_BEADS` here reflects what the controller pod
-  # will see; defaults to the manifest's hardcoded exec provider.
+  # - `bd`: legacy path — `gc bd [--rig <name>] init -p '<prefix>' --skip-hooks`.
+  # - `exec:gc-beads-k8s`: init the Dolt-backed store via the exec provider
+  #   directly. `gc bd init` refuses for non-bd providers with
+  #   `gc bd: only supported for bd-backed beads providers`.
   local controller_beads="${GC_BEADS_PROVIDER:-exec:gc-beads-k8s}"
+  local beads_mode
   case "$controller_beads" in
-    bd)
-      # Native bd provider: continue with legacy per-scope bootstrap.
-      ;;
+    bd)                beads_mode="bd" ;;
+    exec:gc-beads-k8s) beads_mode="k8s" ;;
     *)
-      echo "  controller beads provider is '$controller_beads'; skipping bd bootstrap (exec providers self-init via ensure-ready)."
+      echo "  controller beads provider is '$controller_beads'; skipping bootstrap (unknown exec provider; expecting in-process ensure-ready)."
       return 0
       ;;
   esac
@@ -197,14 +196,25 @@ init_controller_beads() {
     hq_prefix=$(derive_prefix "$ws_name")
   fi
   echo "  HQ (prefix: $hq_prefix)..."
-  bootstrap_controller_scope "HQ" "cd /city && gc bd init -p '$hq_prefix' --skip-hooks"
+  case "$beads_mode" in
+    bd)  bootstrap_controller_scope "HQ" "cd /city && gc bd init -p '$hq_prefix' --skip-hooks" ;;
+    # gc-beads-k8s's runner_workdir_for_scope needs GC_CITY to map the
+    # controller-side scope path (/city[/<rig>]) to the runner-side
+    # workdir (/workspace[/<rig>]). Without it, `init` silently no-ops
+    # — all failures are swallowed by `>/dev/null 2>&1 || true` in the
+    # provider — and .beads/ is never created.
+    k8s) bootstrap_controller_scope "HQ" "GC_CITY=/city gc-beads-k8s init /city '$hq_prefix'" ;;
+  esac
 
   local in_rig=false rig_name="" rig_prefix=""
   flush_rig() {
     [ -z "$rig_name" ] && return
     [ -z "$rig_prefix" ] && rig_prefix=$(derive_prefix "$rig_name")
     echo "  rig '$rig_name' (prefix: $rig_prefix)..."
-    bootstrap_controller_scope "rig '$rig_name'" "cd /city && gc bd --rig '$rig_name' init -p '$rig_prefix' --skip-hooks"
+    case "$beads_mode" in
+      bd)  bootstrap_controller_scope "rig '$rig_name'" "cd /city && gc bd --rig '$rig_name' init -p '$rig_prefix' --skip-hooks" ;;
+      k8s) bootstrap_controller_scope "rig '$rig_name'" "GC_CITY=/city GC_CITY_PATH=/city gc-beads-k8s init /city/$rig_name '$rig_prefix'" ;;
+    esac
     rig_name="" rig_prefix=""
   }
 
