@@ -51,6 +51,11 @@ CTRL_MEM_REQ="${GC_K8S_CTRL_MEM_REQUEST:-256Mi}"
 CTRL_CPU_LIM="${GC_K8S_CTRL_CPU_LIMIT:-500m}"
 CTRL_MEM_LIM="${GC_K8S_CTRL_MEM_LIMIT:-512Mi}"
 
+# Image pull policy. Defaults to Always (matches registry-backed prod).
+# Set GC_K8S_IMAGE_PULL_POLICY=IfNotPresent for local-only images
+# (e.g. OrbStack k8s with shared Docker daemon, or kind after `kind load`).
+CTRL_PULL_POLICY="${GC_K8S_IMAGE_PULL_POLICY:-Always}"
+
 # Build kubectl base command with optional context.
 KUBECTL=(kubectl)
 if [ -n "${GC_K8S_CONTEXT:-}" ]; then
@@ -154,6 +159,25 @@ init_controller_beads() {
   local city_path="$1"
   local resolved_config
 
+  # Choose the per-scope init command based on the controller's beads
+  # provider. `GC_BEADS_PROVIDER` mirrors what the controller pod will
+  # see (defaults to the manifest's hardcoded exec provider).
+  #
+  # - `bd`: legacy path — `gc bd [--rig <name>] init -p '<prefix>' --skip-hooks`.
+  # - `exec:gc-beads-k8s`: init the Dolt-backed store via the exec provider
+  #   directly. `gc bd init` refuses for non-bd providers with
+  #   `gc bd: only supported for bd-backed beads providers`.
+  local controller_beads="${GC_BEADS_PROVIDER:-exec:gc-beads-k8s}"
+  local beads_mode
+  case "$controller_beads" in
+    bd)                beads_mode="bd" ;;
+    exec:gc-beads-k8s) beads_mode="k8s" ;;
+    *)
+      echo "  controller beads provider is '$controller_beads'; skipping bootstrap (unknown exec provider; expecting in-process ensure-ready)."
+      return 0
+      ;;
+  esac
+
   if ! resolved_config=$("$GC_BIN" config show --city "$city_path" 2>&1); then
     echo "deploy: failed to resolve city config for controller bootstrap" >&2
     echo "$resolved_config" >&2
@@ -172,14 +196,25 @@ init_controller_beads() {
     hq_prefix=$(derive_prefix "$ws_name")
   fi
   echo "  HQ (prefix: $hq_prefix)..."
-  bootstrap_controller_scope "HQ" "cd /city && gc bd init -p '$hq_prefix' --skip-hooks"
+  case "$beads_mode" in
+    bd)  bootstrap_controller_scope "HQ" "cd /city && gc bd init -p '$hq_prefix' --skip-hooks" ;;
+    # gc-beads-k8s's runner_workdir_for_scope needs GC_CITY to map the
+    # controller-side scope path (/city[/<rig>]) to the runner-side
+    # workdir (/workspace[/<rig>]). Without it, `init` silently no-ops
+    # — all failures are swallowed by `>/dev/null 2>&1 || true` in the
+    # provider — and .beads/ is never created.
+    k8s) bootstrap_controller_scope "HQ" "GC_CITY=/city gc-beads-k8s init /city '$hq_prefix'" ;;
+  esac
 
   local in_rig=false rig_name="" rig_prefix=""
   flush_rig() {
     [ -z "$rig_name" ] && return
     [ -z "$rig_prefix" ] && rig_prefix=$(derive_prefix "$rig_name")
     echo "  rig '$rig_name' (prefix: $rig_prefix)..."
-    bootstrap_controller_scope "rig '$rig_name'" "cd /city && gc bd --rig '$rig_name' init -p '$rig_prefix' --skip-hooks"
+    case "$beads_mode" in
+      bd)  bootstrap_controller_scope "rig '$rig_name'" "cd /city && gc bd --rig '$rig_name' init -p '$rig_prefix' --skip-hooks" ;;
+      k8s) bootstrap_controller_scope "rig '$rig_name'" "GC_CITY=/city GC_CITY_PATH=/city gc-beads-k8s init /city/$rig_name '$rig_prefix'" ;;
+    esac
     rig_name="" rig_prefix=""
   }
 
@@ -246,6 +281,7 @@ case "$op" in
       --arg dolt_port "$EXPLICIT_DOLT_PORT" \
       --arg prebaked "${GC_K8S_PREBAKED:-false}" \
       --arg agent_sa "${GC_K8S_SERVICE_ACCOUNT:-}" \
+      --arg pull_policy "$CTRL_PULL_POLICY" \
       '{
         apiVersion: "v1",
         kind: "Pod",
@@ -262,7 +298,7 @@ case "$op" in
           containers: [{
             name: "controller",
             image: $image,
-            imagePullPolicy: "Always",
+            imagePullPolicy: $pull_policy,
             workingDir: "/city",
             env: (
               [
@@ -273,6 +309,7 @@ case "$op" in
                 {name: "GC_K8S_NAMESPACE", value: $ns},
                 {name: "GC_K8S_PREBAKED", value: $prebaked},
                 {name: "GC_K8S_SERVICE_ACCOUNT", value: $agent_sa},
+                {name: "GC_K8S_IMAGE_PULL_POLICY", value: $pull_policy},
                 {name: "GC_K8S_MCP_MAIL_HOST", value: "mcp-mail.gc.svc.cluster.local"},
                 {name: "GC_K8S_MCP_MAIL_PORT", value: "8765"},
                 {name: "GC_MAIL", value: "exec:gc-mail-mcp-agent-mail"},
@@ -316,6 +353,18 @@ case "$op" in
       echo "deploy: failed to copy city directory" >&2
       exit 1
     }
+
+    # Rewrite host-absolute paths in .gc/site.toml to /city. gc rig add
+    # stores each rig's path as an absolute host path; after kubectl cp
+    # the content is at /city/<rig> but site.toml still points at
+    # $city_path/<rig>. Without this, the controller's reconcile loop
+    # fails every rig-scoped beads call with
+    # `store root <host-path> is outside city root /city`.
+    if [ -n "$city_path" ]; then
+      "${KUBECTL[@]}" exec "$POD_NAME" -- sh -c \
+        "test -f /city/.gc/site.toml && sed -i 's|${city_path}|/city|g' /city/.gc/site.toml" \
+        2>/dev/null || true
+    fi
 
     # Wait for gc init to complete (sentinel written by Dockerfile CMD).
     echo "Waiting for gc init..."

@@ -50,7 +50,15 @@ RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION
 # Default non-root user for Claude Code (--dangerously-skip-permissions rejects root).
 # When LINUX_USERNAME is set at runtime, the pod entrypoint creates a dynamic
 # user via useradd and drops privileges via su. gcagent is kept as fallback.
-RUN useradd -m -s /bin/bash gcagent \
+#
+# Force gcagent to uid/gid 1000: Ubuntu 24.04 pre-allocates uid 1000 to the
+# `ubuntu` user, so a plain `useradd -m gcagent` would land on uid 1001. Pod
+# specs that hardcode `runAsUser: 1000` (contrib/beads-scripts/gc-beads-k8s,
+# internal/runtime/k8s/pod.go) would then run as `ubuntu` instead of gcagent,
+# and fail on /workspace ownership. Deleting the default `ubuntu` user first
+# frees uid 1000 for gcagent.
+RUN userdel -r ubuntu 2>/dev/null || true \
+    && useradd -m -u 1000 -s /bin/bash gcagent \
     && echo "gcagent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/gcagent \
     && chmod 0440 /etc/sudoers.d/gcagent
 ENV HOME=/home/gcagent
