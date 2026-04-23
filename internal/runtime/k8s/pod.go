@@ -266,10 +266,11 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 		Spec: corev1.PodSpec{
 			ServiceAccountName: p.serviceAccount,
 			RestartPolicy:      corev1.RestartPolicyNever,
+			ImagePullSecrets:   buildImagePullSecretRefs(p.imagePullSecrets),
 			Containers: []corev1.Container{{
 				Name:            "agent",
 				Image:           p.image,
-				ImagePullPolicy: corev1.PullAlways,
+				ImagePullPolicy: p.imagePullPolicy,
 				WorkingDir:      podWorkDir,
 				Command:         []string{"/bin/sh", "-c"},
 				Args:            []string{tmuxCmd},
@@ -297,7 +298,7 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 		pod.Spec.InitContainers = []corev1.Container{{
 			Name:            "stage",
 			Image:           p.image,
-			ImagePullPolicy: corev1.PullIfNotPresent,
+			ImagePullPolicy: p.imagePullPolicy,
 			Command:         []string{"sh", "-c", "while [ ! -f /workspace/.gc-ready ]; do sleep 0.5; done"},
 			VolumeMounts:    initVolMounts,
 		}}
@@ -457,3 +458,47 @@ func buildResources(p *Provider) (corev1.ResourceRequirements, error) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// parseImagePullPolicy turns the raw GC_K8S_IMAGE_PULL_POLICY value into a
+// typed PullPolicy. Empty defaults to PullAlways so existing callers keep
+// the old behavior when the env var is unset.
+func parseImagePullPolicy(raw string) (corev1.PullPolicy, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return corev1.PullAlways, nil
+	}
+	switch corev1.PullPolicy(raw) {
+	case corev1.PullAlways, corev1.PullIfNotPresent, corev1.PullNever:
+		return corev1.PullPolicy(raw), nil
+	default:
+		return "", fmt.Errorf("invalid GC_K8S_IMAGE_PULL_POLICY %q (want Always, IfNotPresent, or Never)", raw)
+	}
+}
+
+// parseImagePullSecrets splits a comma-separated list of Secret names,
+// trimming whitespace and dropping empties. Returns nil when no usable
+// names remain so the pod spec omits the field entirely.
+func parseImagePullSecrets(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if name := strings.TrimSpace(part); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func buildImagePullSecretRefs(names []string) []corev1.LocalObjectReference {
+	if len(names) == 0 {
+		return nil
+	}
+	refs := make([]corev1.LocalObjectReference, 0, len(names))
+	for _, n := range names {
+		refs = append(refs, corev1.LocalObjectReference{Name: n})
+	}
+	return refs
+}
