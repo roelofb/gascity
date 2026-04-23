@@ -354,6 +354,18 @@ case "$op" in
       exit 1
     }
 
+    # Rewrite host-absolute paths in .gc/site.toml to /city. gc rig add
+    # stores each rig's path as an absolute host path; after kubectl cp
+    # the content is at /city/<rig> but site.toml still points at
+    # $city_path/<rig>. Without this, the controller's reconcile loop
+    # fails every rig-scoped beads call with
+    # `store root <host-path> is outside city root /city`.
+    if [ -n "$city_path" ]; then
+      "${KUBECTL[@]}" exec "$POD_NAME" -- sh -c \
+        "test -f /city/.gc/site.toml && sed -i 's|${city_path}|/city|g' /city/.gc/site.toml" \
+        2>/dev/null || true
+    fi
+
     # Wait for gc init to complete (sentinel written by Dockerfile CMD).
     echo "Waiting for gc init..."
     for i in $(seq 1 60); do
