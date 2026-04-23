@@ -1,0 +1,23 @@
+engdocs/proposals/phase-2-hosted-aks-deployment.md
+  4c6305c29df4678a 1-411
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "688935141ea63a37a6e21f9fdee2e18a7dea4575",
+  "prompts": {
+    "4c6305c29df4678a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a8a1abd-e898-4656-865f-86b198247f4f",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Roelof Blom",
+      "messages": [],
+      "total_additions": 481,
+      "total_deletions": 4,
+      "accepted_lines": 477,
+      "overriden_lines": 0
+    }
+  }
+}
