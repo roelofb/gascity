@@ -1,0 +1,119 @@
+# Default values for the gascity Helm chart.
+# Override with `-f <city>/deploy/values.yaml` in GHA.
+
+# Stable release name so resources keep predictable names regardless of
+# how the release is named.
+fullnameOverride: gc-controller
+
+# Per-tenant hostname component: ingresses render as
+# <svc>.<tenant>.<domain>.
+tenant: city
+domain: gascity.example.com
+
+# Images. Tag is overridden per deploy via --set image.tag=sha-<short>.
+image:
+  registry: ghcr.io/roelofb
+  controller: gc-controller
+  agent: gc-agent
+  mail: gc-mail
+  tag: main
+  pullPolicy: Always
+  # Secret names are created out-of-band (Sealed Secrets).
+  pullSecrets:
+    - ghcr-pull
+
+# City repo cloned into /city by the git-clone init container.
+city:
+  repo: "git@github.com:roelofb/city-rb2.git"
+  ref: main
+  # Secret names for SSH clone. Provisioned via Sealed Secrets.
+  deployKeySecret: city-deploy-key
+  knownHostsSecret: github-known-hosts
+  # Prefix for beads bootstrap (mirrors Phase 1 init_controller_beads).
+  hqPrefix: hq
+  # List of rig directories to bootstrap beads for. Each entry is a path
+  # relative to /city.
+  rigs: []
+
+controller:
+  replicas: 1
+  serviceAccount: gc-controller
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  # Agent pods the controller spawns inherit these via env.
+  agent:
+    imagePullPolicy: Always
+    imagePullSecret: ghcr-pull
+  # Publications sidecar — stubbed until its binary ships in a follow-up.
+  # Once the image is built, set enabled=true and bump image.tag.
+  publicationsSidecar:
+    enabled: false
+    image: ghcr.io/roelofb/gc-publications-sidecar
+    tag: main
+
+mcpMail:
+  enabled: true
+  replicas: 1
+  # Must match the port the gc-mail image (contrib/k8s/Dockerfile.mail)
+  # listens on. Overriding here also needs a matching override in the
+  # mail container image if you bake your own.
+  port: 8765
+  # Project identifier the mail provider uses when persisting messages.
+  # Controller and agent pods both advertise the same value.
+  project: /workspace
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+dolt:
+  image: dolthub/dolt-sql-server
+  tag: "1.58.10"
+  port: 3307
+  storageClass: managed-csi
+  storageSize: 50Gi
+  # DOLT_ROOT_PASSWORD is read via envFrom from the Sealed Secret below.
+  rootPasswordSecret: dolt-root
+  rootPasswordKey: password
+  snapshot:
+    enabled: true
+    schedule: "0 3 * * 0"
+    volumeSnapshotClass: csi-azuredisk-vsc
+
+eventCleanup:
+  enabled: true
+  # Every 6 hours — matches upstream cadence. Deletes ConfigMap-backed
+  # events (`gc/component=event`) older than the retention window.
+  schedule: "0 */6 * * *"
+  retentionHours: 24
+
+# Secrets provisioned out-of-band (Sealed Secrets). The chart references
+# them by name only.
+secrets:
+  claudeCredentials: claude-credentials
+  gitCredentials: git-credentials
+
+ingress:
+  enabled: true
+  className: nginx
+  clusterIssuer: letsencrypt-staging
+  # Additional annotations shared across every ingress.
+  annotations: {}
+  discordInteractions:
+    enabled: true
+    host: "discord-interactions"
+    service: discord-interactions
+    port: 8080
+  discordAdmin:
+    enabled: true
+    host: "discord-admin"
+    service: discord-admin
+    port: 8080

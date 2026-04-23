@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gascity.controllerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  type: ClusterIP
+  ports:
+    - name: supervisor
+      port: 8090
+      targetPort: supervisor
+  selector:
+    {{- include "gascity.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller

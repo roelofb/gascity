@@ -1,0 +1,78 @@
+{{- if .Values.dolt.snapshot.enabled -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ printf "%s-snapshot" (include "gascity.doltName" .) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt-snapshot
+spec:
+  schedule: {{ .Values.dolt.snapshot.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: {{ printf "%s-snapshot" (include "gascity.doltName" .) }}
+          containers:
+            - name: snapshot
+              image: bitnami/kubectl:latest
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  NAME="dolt-$(date -u +%Y%m%dT%H%M%SZ)"
+                  cat <<YAML | kubectl apply -f -
+                  apiVersion: snapshot.storage.k8s.io/v1
+                  kind: VolumeSnapshot
+                  metadata:
+                    name: $NAME
+                    namespace: {{ .Release.Namespace }}
+                  spec:
+                    volumeSnapshotClassName: {{ .Values.dolt.snapshot.volumeSnapshotClass }}
+                    source:
+                      persistentVolumeClaimName: dolt-data-{{ include "gascity.doltName" . }}-0
+                  YAML
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ printf "%s-snapshot" (include "gascity.doltName" .) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ printf "%s-snapshot" (include "gascity.doltName" .) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["create", "get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-snapshot" (include "gascity.doltName" .) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ printf "%s-snapshot" (include "gascity.doltName" .) }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ printf "%s-snapshot" (include "gascity.doltName" .) }}
+    namespace: {{ .Release.Namespace }}
+{{- end -}}

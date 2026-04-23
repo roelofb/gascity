@@ -1,0 +1,16 @@
+controller:
+  replicaCount: 1
+  service:
+    type: LoadBalancer
+    # Reserve a static public IP in Azure and set its name here + the
+    # resource group annotation below. Until then the LB gets a fresh IP
+    # every cluster rebuild, which forces the *.domain A record to churn.
+    # annotations:
+    #   service.beta.kubernetes.io/azure-load-balancer-resource-group: gascity-staging
+    #   service.beta.kubernetes.io/azure-pip-name: gascity-lb-ip
+  config:
+    use-forwarded-headers: "true"
+  metrics:
+    enabled: false
+  admissionWebhooks:
+    enabled: true

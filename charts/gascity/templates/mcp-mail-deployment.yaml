@@ -1,0 +1,35 @@
+{{- if .Values.mcpMail.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gascity.mailName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mail
+spec:
+  replicas: {{ .Values.mcpMail.replicas }}
+  selector:
+    matchLabels:
+      {{- include "gascity.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mail
+  template:
+    metadata:
+      labels:
+        {{- include "gascity.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mail
+    spec:
+      {{- if .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- include "gascity.imagePullSecrets" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mail
+          image: {{ include "gascity.mailImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcpMail.port }}
+          resources:
+            {{- toYaml .Values.mcpMail.resources | nindent 12 }}
+{{- end -}}

@@ -1,0 +1,51 @@
+{{- if .Values.eventCleanup.enabled -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ printf "%s-event-cleanup" (include "gascity.controllerName" .) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: event-cleanup
+spec:
+  schedule: {{ .Values.eventCleanup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ .Values.controller.serviceAccount }}
+          containers:
+            - name: event-cleanup
+              image: bitnami/kubectl:latest
+              imagePullPolicy: IfNotPresent
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  RETENTION={{ .Values.eventCleanup.retentionHours | int }}
+                  cutoff=$(date -u -d "${RETENTION} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                    || date -u -v-"${RETENTION}"H +%Y-%m-%dT%H:%M:%SZ)
+                  echo "Pruning event ConfigMaps created before $cutoff..."
+                  kubectl -n {{ .Release.Namespace }} get configmaps -l gc/component=event \
+                    -o json | jq -r --arg cutoff "$cutoff" \
+                    '.items[] | select(.metadata.creationTimestamp < $cutoff) | .metadata.name' \
+                  | while read -r name; do
+                      echo "  deleting $name"
+                      kubectl -n {{ .Release.Namespace }} delete configmap "$name"
+                    done
+                  echo "Done."
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+{{- end -}}

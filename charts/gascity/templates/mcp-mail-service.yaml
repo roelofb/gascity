@@ -1,0 +1,19 @@
+{{- if .Values.mcpMail.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-mail
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mail
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.mcpMail.port }}
+      targetPort: http
+  selector:
+    {{- include "gascity.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mail
+{{- end -}}

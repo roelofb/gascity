@@ -1,0 +1,33 @@
+{{- if and .Values.ingress.enabled .Values.ingress.discordAdmin.enabled -}}
+{{- $host := include "gascity.host" (dict "root" . "svc" .Values.ingress.discordAdmin.host) -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ printf "%s-discord-admin" (include "gascity.controllerName" .) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: discord-admin
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ $host }}
+      secretName: {{ printf "%s-tls" (include "gascity.controllerName" .) }}-discord-admin
+  rules:
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.ingress.discordAdmin.service }}
+                port:
+                  number: {{ .Values.ingress.discordAdmin.port }}
+{{- end -}}

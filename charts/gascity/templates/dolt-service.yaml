@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dolt
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt
+spec:
+  type: ClusterIP
+  ports:
+    - name: sql
+      port: {{ .Values.dolt.port }}
+      targetPort: sql
+  selector:
+    {{- include "gascity.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt

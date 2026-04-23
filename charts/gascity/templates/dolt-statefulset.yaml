@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "gascity.doltName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt
+spec:
+  serviceName: dolt
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gascity.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dolt
+  template:
+    metadata:
+      labels:
+        {{- include "gascity.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: dolt
+    spec:
+      {{- if .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- include "gascity.imagePullSecrets" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: dolt
+          image: {{ include "gascity.doltImage" . }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - sql-server
+            - --host=0.0.0.0
+            - --port={{ .Values.dolt.port }}
+          env:
+            - name: DOLT_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dolt.rootPasswordSecret }}
+                  key: {{ .Values.dolt.rootPasswordKey }}
+          ports:
+            - name: sql
+              containerPort: {{ .Values.dolt.port }}
+          volumeMounts:
+            - name: dolt-data
+              mountPath: /var/lib/dolt
+          readinessProbe:
+            tcpSocket:
+              port: sql
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: sql
+            initialDelaySeconds: 30
+            periodSeconds: 30
+  volumeClaimTemplates:
+    - metadata:
+        name: dolt-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.dolt.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.dolt.storageSize }}

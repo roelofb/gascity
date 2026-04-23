@@ -1,0 +1,178 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gascity.controllerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gascity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "gascity.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "gascity.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: {{ .Values.controller.serviceAccount }}
+      {{- if .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- include "gascity.imagePullSecrets" . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: city
+          emptyDir: {}
+        - name: ssh
+          projected:
+            sources:
+              - secret:
+                  name: {{ .Values.city.deployKeySecret }}
+                  items:
+                    - key: id_ed25519
+                      path: id_ed25519
+                      mode: 0400
+              - secret:
+                  name: {{ .Values.city.knownHostsSecret }}
+                  items:
+                    - key: known_hosts
+                      path: known_hosts
+                      mode: 0444
+      initContainers:
+        - name: git-clone
+          image: alpine/git:2.45.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: GIT_SSH_COMMAND
+              value: "ssh -o UserKnownHostsFile=/ssh/known_hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -i /ssh/id_ed25519"
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              if [ -d /city/.git ]; then
+                cd /city && git fetch --depth=1 origin {{ .Values.city.ref }} && git reset --hard FETCH_HEAD
+              else
+                git clone --depth=1 --branch {{ .Values.city.ref }} {{ .Values.city.repo }} /city
+              fi
+          volumeMounts:
+            - name: city
+              mountPath: /city
+            - name: ssh
+              mountPath: /ssh
+              readOnly: true
+        - name: site-toml-rewrite
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              F=/city/.gc/site.toml
+              [ -f "$F" ] || exit 0
+              # Rewrite any absolute rig paths to /city-relative form. Guards
+              # against stale snapshots even though GHA deploys also rewrite.
+              sed -i 's#"/.*city-rb2#"/city#g; s#"/[^"]*\(/rigs/\)#"/city\1#g' "$F"
+          volumeMounts:
+            - name: city
+              mountPath: /city
+        - name: bootstrap-beads
+          image: {{ include "gascity.controllerImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: GC_CITY
+              value: /city
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              gc-beads-k8s init /city {{ .Values.city.hqPrefix }}
+              {{- range .Values.city.rigs }}
+              gc-beads-k8s init /city/{{ . }} {{ base . }}
+              {{- end }}
+          volumeMounts:
+            - name: city
+              mountPath: /city
+        - name: render-publications-initial
+          image: {{ include "gascity.controllerImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              mkdir -p /city/.gc/supervisor
+              TMP=$(mktemp /city/.gc/supervisor/publications.json.XXXXXX)
+              cat >"$TMP" <<'JSON'
+              {"version":1,"cities":{}}
+              JSON
+              mv "$TMP" /city/.gc/supervisor/publications.json
+          volumeMounts:
+            - name: city
+              mountPath: /city
+      containers:
+        - name: controller
+          image: {{ include "gascity.controllerImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              exec gc start --foreground /city
+          env:
+            - name: GC_CITY
+              value: /city
+            - name: GC_DOLT_HOST
+              value: dolt.{{ .Release.Namespace }}.svc.cluster.local
+            - name: GC_DOLT_PORT
+              value: {{ .Values.dolt.port | quote }}
+            - name: GC_DOLT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dolt.rootPasswordSecret }}
+                  key: {{ .Values.dolt.rootPasswordKey }}
+            - name: GC_K8S_NAMESPACE
+              value: {{ .Release.Namespace }}
+            - name: GC_K8S_IMAGE
+              value: {{ include "gascity.agentImage" . }}
+            - name: GC_K8S_IMAGE_PULL_POLICY
+              value: {{ .Values.controller.agent.imagePullPolicy }}
+            - name: GC_K8S_IMAGE_PULL_SECRET
+              value: {{ .Values.controller.agent.imagePullSecret }}
+            {{- if .Values.mcpMail.enabled }}
+            - name: GC_MAIL
+              value: "exec:gc-mail-mcp-agent-mail"
+            - name: GC_MCP_MAIL_URL
+              value: "http://mcp-mail.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.mcpMail.port }}"
+            - name: GC_MCP_MAIL_PROJECT
+              value: {{ .Values.mcpMail.project | quote }}
+            - name: GC_K8S_MCP_MAIL_PORT
+              value: {{ .Values.mcpMail.port | quote }}
+            {{- end }}
+          ports:
+            - name: supervisor
+              containerPort: 8090
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          volumeMounts:
+            - name: city
+              mountPath: /city
+        {{- if .Values.controller.publicationsSidecar.enabled }}
+        - name: publications-sidecar
+          image: {{ printf "%s:%s" .Values.controller.publicationsSidecar.image .Values.controller.publicationsSidecar.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: GC_CITY
+              value: /city
+            - name: GC_NAMESPACE
+              value: {{ .Release.Namespace }}
+          volumeMounts:
+            - name: city
+              mountPath: /city
+        {{- end }}
