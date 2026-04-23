@@ -1,0 +1,23 @@
+contrib/k8s/Dockerfile.base
+  4c6305c29df4678a 53-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "8b660341755f275c447d7ec8be18a484c1bb1f49",
+  "prompts": {
+    "4c6305c29df4678a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a8a1abd-e898-4656-865f-86b198247f4f",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Roelof Blom",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 1,
+      "accepted_lines": 9,
+      "overriden_lines": 0
+    }
+  }
+}
