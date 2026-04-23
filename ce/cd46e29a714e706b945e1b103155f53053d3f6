@@ -1,0 +1,36 @@
+engdocs/proposals/phase-2-hosted-aks-deployment.md
+  4c6305c29df4678a 1-701
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "cecd46e29a714e706b945e1b103155f53053d3f6",
+  "prompts": {
+    "4c6305c29df4678a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a8a1abd-e898-4656-865f-86b198247f4f",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 1007,
+      "total_deletions": 239,
+      "accepted_lines": 766,
+      "overriden_lines": 0
+    },
+    "58bdad3eedbed3ca": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dba8a-d5ec-7212-b08c-2576b367368d",
+        "model": "gpt-5.4"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 4,
+      "total_deletions": 4,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
