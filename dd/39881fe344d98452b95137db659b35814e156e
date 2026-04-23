@@ -1,0 +1,67 @@
+charts/gascity/templates/dolt-snapshot-cronjob.yaml
+  3df19bc8ee88266c 1-78
+charts/gascity/templates/ingress-discord-admin.yaml
+  3df19bc8ee88266c 1-33
+bootstrap/bootstrap.sh
+  3df19bc8ee88266c 1-45
+charts/gascity/templates/serviceaccount.yaml
+  3df19bc8ee88266c 1-15
+bootstrap/values/cert-manager.yaml
+  3df19bc8ee88266c 1-5
+charts/gascity/templates/rbac.yaml
+  3df19bc8ee88266c 1-42
+charts/gascity/templates/controller-deployment.yaml
+  3df19bc8ee88266c 1-168
+bootstrap/values/ingress-nginx.yaml
+  3df19bc8ee88266c 1-16
+bootstrap/cluster-issuer.yaml
+  3df19bc8ee88266c 1-29
+bootstrap/values/sealed-secrets.yaml
+  3df19bc8ee88266c 1-11
+charts/gascity/templates/dolt-statefulset.yaml
+  3df19bc8ee88266c 1-64
+bootstrap/volumesnapshotclass.yaml
+  3df19bc8ee88266c 1-8
+charts/gascity/templates/controller-service.yaml
+  3df19bc8ee88266c 1-17
+charts/gascity/Chart.yaml
+  3df19bc8ee88266c 1-7
+scripts/chart-validate.sh
+  3df19bc8ee88266c 1-34
+charts/gascity/templates/rbac-publications-sidecar.yaml
+  3df19bc8ee88266c 1-27
+charts/gascity/templates/dolt-service.yaml
+  3df19bc8ee88266c 1-17
+charts/gascity/templates/mcp-mail-service.yaml
+  3df19bc8ee88266c 1-19
+charts/gascity/templates/event-cleanup-cronjob.yaml
+  3df19bc8ee88266c 1-33
+charts/gascity/templates/ingress-discord-interactions.yaml
+  3df19bc8ee88266c 1-33
+charts/gascity/templates/_helpers.tpl
+  3df19bc8ee88266c 1-83
+charts/gascity/templates/mcp-mail-deployment.yaml
+  3df19bc8ee88266c 1-35
+charts/gascity/values.yaml
+  3df19bc8ee88266c 1-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "dd39881fe344d98452b95137db659b35814e156e",
+  "prompts": {
+    "3df19bc8ee88266c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "02565e4a-d451-4d66-b876-d86cacbb1891",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Roelof Blom",
+      "messages": [],
+      "total_additions": 966,
+      "total_deletions": 36,
+      "accepted_lines": 992,
+      "overriden_lines": 0
+    }
+  }
+}
