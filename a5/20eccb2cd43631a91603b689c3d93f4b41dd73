@@ -1,0 +1,29 @@
+charts/gascity/templates/controller-deployment.yaml
+  3df19bc8ee88266c 148-157
+charts/gascity/templates/event-cleanup-cronjob.yaml
+  3df19bc8ee88266c 13,17-18,21,28,32-50
+charts/gascity/values.yaml
+  3df19bc8ee88266c 62-68,93-96
+charts/gascity/templates/rbac.yaml
+  3df19bc8ee88266c 19-21,24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "a520eccb2cd43631a91603b689c3d93f4b41dd73",
+  "prompts": {
+    "3df19bc8ee88266c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "02565e4a-d451-4d66-b876-d86cacbb1891",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Roelof Blom",
+      "messages": [],
+      "total_additions": 70,
+      "total_deletions": 28,
+      "accepted_lines": 114,
+      "overriden_lines": 0
+    }
+  }
+}
