@@ -51,6 +51,11 @@ CTRL_MEM_REQ="${GC_K8S_CTRL_MEM_REQUEST:-256Mi}"
 CTRL_CPU_LIM="${GC_K8S_CTRL_CPU_LIMIT:-500m}"
 CTRL_MEM_LIM="${GC_K8S_CTRL_MEM_LIMIT:-512Mi}"
 
+# Image pull policy. Defaults to Always (matches registry-backed prod).
+# Set GC_K8S_IMAGE_PULL_POLICY=IfNotPresent for local-only images
+# (e.g. OrbStack k8s with shared Docker daemon, or kind after `kind load`).
+CTRL_PULL_POLICY="${GC_K8S_IMAGE_PULL_POLICY:-Always}"
+
 # Build kubectl base command with optional context.
 KUBECTL=(kubectl)
 if [ -n "${GC_K8S_CONTEXT:-}" ]; then
@@ -154,6 +159,26 @@ init_controller_beads() {
   local city_path="$1"
   local resolved_config
 
+  # The controller pod created by this script runs with
+  # `GC_BEADS=exec:gc-beads-k8s` (see manifest above). The exec provider
+  # handles its own ensure-ready bootstrap against Dolt; `gc bd init` is
+  # only valid against the native bd-backed provider and will fail with
+  # `gc bd: only supported for bd-backed beads providers`.
+  #
+  # Skip the legacy bd bootstrap when the controller env selects a
+  # non-bd provider. `GC_BEADS` here reflects what the controller pod
+  # will see; defaults to the manifest's hardcoded exec provider.
+  local controller_beads="${GC_BEADS_PROVIDER:-exec:gc-beads-k8s}"
+  case "$controller_beads" in
+    bd)
+      # Native bd provider: continue with legacy per-scope bootstrap.
+      ;;
+    *)
+      echo "  controller beads provider is '$controller_beads'; skipping bd bootstrap (exec providers self-init via ensure-ready)."
+      return 0
+      ;;
+  esac
+
   if ! resolved_config=$("$GC_BIN" config show --city "$city_path" 2>&1); then
     echo "deploy: failed to resolve city config for controller bootstrap" >&2
     echo "$resolved_config" >&2
@@ -246,6 +271,7 @@ case "$op" in
       --arg dolt_port "$EXPLICIT_DOLT_PORT" \
       --arg prebaked "${GC_K8S_PREBAKED:-false}" \
       --arg agent_sa "${GC_K8S_SERVICE_ACCOUNT:-}" \
+      --arg pull_policy "$CTRL_PULL_POLICY" \
       '{
         apiVersion: "v1",
         kind: "Pod",
@@ -262,7 +288,7 @@ case "$op" in
           containers: [{
             name: "controller",
             image: $image,
-            imagePullPolicy: "Always",
+            imagePullPolicy: $pull_policy,
             workingDir: "/city",
             env: (
               [
@@ -273,6 +299,7 @@ case "$op" in
                 {name: "GC_K8S_NAMESPACE", value: $ns},
                 {name: "GC_K8S_PREBAKED", value: $prebaked},
                 {name: "GC_K8S_SERVICE_ACCOUNT", value: $agent_sa},
+                {name: "GC_K8S_IMAGE_PULL_POLICY", value: $pull_policy},
                 {name: "GC_K8S_MCP_MAIL_HOST", value: "mcp-mail.gc.svc.cluster.local"},
                 {name: "GC_K8S_MCP_MAIL_PORT", value: "8765"},
                 {name: "GC_MAIL", value: "exec:gc-mail-mcp-agent-mail"},
