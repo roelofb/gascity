@@ -41,6 +41,8 @@ type Provider struct {
 	prebaked           bool          // skip staging + init container for prebaked images
 	postStartSettle    time.Duration // settle time before post-start liveness check
 	stderr             io.Writer     // warning output (default os.Stderr)
+	imagePullPolicy    corev1.PullPolicy
+	imagePullSecrets   []string
 }
 
 // NewProvider creates a K8s session provider.
@@ -51,6 +53,8 @@ type Provider struct {
 //   - GC_K8S_SERVICE_ACCOUNT — pod service account name (default: namespace default)
 //   - GC_K8S_CPU_REQUEST, GC_K8S_MEM_REQUEST — resource requests
 //   - GC_K8S_CPU_LIMIT, GC_K8S_MEM_LIMIT — resource limits
+//   - GC_K8S_IMAGE_PULL_POLICY — agent container pull policy (default Always)
+//   - GC_K8S_IMAGE_PULL_SECRET — comma-separated Secret names for private registry pulls
 //
 // The in-cluster Dolt service alias defaults to the provider defaults
 // (dolt.gc.svc.cluster.local:3307). Pods receive projected GC_DOLT_* env;
@@ -79,6 +83,11 @@ func NewProvider() (*Provider, error) {
 		return nil, err
 	}
 
+	pullPolicy, err := parseImagePullPolicy(os.Getenv("GC_K8S_IMAGE_PULL_POLICY"))
+	if err != nil {
+		return nil, err
+	}
+
 	return &Provider{
 		ops: &realK8sOps{
 			clientset:  clientset,
@@ -98,6 +107,8 @@ func NewProvider() (*Provider, error) {
 		prebaked:           os.Getenv("GC_K8S_PREBAKED") == "true",
 		postStartSettle:    3 * time.Second,
 		stderr:             os.Stderr,
+		imagePullPolicy:    pullPolicy,
+		imagePullSecrets:   parseImagePullSecrets(os.Getenv("GC_K8S_IMAGE_PULL_SECRET")),
 	}, nil
 }
 
@@ -114,6 +125,7 @@ func newProviderWithOps(ops k8sOps) *Provider {
 		cpuLimit:           "2",
 		memLimit:           "4Gi",
 		stderr:             io.Discard,
+		imagePullPolicy:    corev1.PullAlways,
 	}
 }
 
